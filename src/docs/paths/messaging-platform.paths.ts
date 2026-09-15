@@ -715,7 +715,10 @@ export const platformExtPaths: OpenApiPaths = {
     get: {
       tags: ["SaaS Admin", "Plans"],
       summary: "List effective plan catalog",
-      description: "PLAN_CATALOG merged with PlatformSettings.planOverrides.",
+      description:
+        "Returns effective plans (`PLAN_CATALOG` + `PlatformSettings.planOverrides`) and a **read-only** `pricing` snapshot from environment variables. " +
+        "**Editable via PUT:** `planName` and `limits` only. " +
+        "**Not editable here:** term base prices (`SUBSCRIPTION_BASE_PRICE_*`), plan multipliers, extra branch/user prices, onboarding fee, referral discount, GST — those stay env-backed.",
       security: platformSecurity,
       responses: {
         "200": okResponse({
@@ -723,6 +726,11 @@ export const platformExtPaths: OpenApiPaths = {
           properties: {
             plans: { type: "array", items: { type: "object", additionalProperties: true } },
             overrides: { type: "object", additionalProperties: true },
+            pricing: {
+              type: "object",
+              description: "Read-only env pricing (term bases, multipliers, add-ons).",
+              additionalProperties: true,
+            },
           },
         }),
         ...commonErrorResponses(),
@@ -730,8 +738,11 @@ export const platformExtPaths: OpenApiPaths = {
     },
     put: {
       tags: ["SaaS Admin", "Plans"],
-      summary: "Update plan catalog overrides",
-      description: "Partial overrides per planCode (name/limits). Does not remove enum plans. Secrets not accepted.",
+      summary: "Update plan display names and limits",
+      description:
+        "Partial overrides per `planCode` for **display name** and **limits** only. Does not remove enum plans. " +
+        "Term base prices and add-ons are **not** accepted — they continue to come from backend environment variables. " +
+        "Response includes the same read-only `pricing` snapshot as GET.",
       security: platformSecurity,
       requestBody: jsonBody({
         type: "object",
@@ -761,6 +772,7 @@ export const platformExtPaths: OpenApiPaths = {
           properties: {
             plans: { type: "array", items: { type: "object", additionalProperties: true } },
             overrides: { type: "object", additionalProperties: true },
+            pricing: { type: "object", additionalProperties: true },
           },
         }),
         ...commonErrorResponses(),

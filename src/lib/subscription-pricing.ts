@@ -1,4 +1,4 @@
-import type { PlanCode } from "@prisma/client";
+import type { PlanCode } from "./plan-catalog.js";
 import type { PlanLimits } from "./plan-catalog.js";
 
 export type SubscriptionPricingInput = {
@@ -37,6 +37,23 @@ export type SubscriptionPricingBreakdown = {
   isFirstSubscription: boolean;
 };
 
+export type SubscriptionPricingConfig = {
+  source: "environment" | "platform_settings";
+  currency: string;
+  termBasePrices: { 12: number; 24: number; 36: number; 60: number };
+  planMultipliers: Record<PlanCode, number>;
+  addOns: {
+    extraBranchPrice: number;
+    extraUserPrice: number;
+    onboardingFee: number;
+    referralDiscount: number;
+  };
+  gstPercent: number;
+  /** Fields that admin can edit via PlatformSettings / PUT plans */
+  editableViaPlatformPlansApi: readonly string[];
+  envKeys: readonly string[];
+};
+
 const TERM_LABELS: Record<number, string> = {
   12: "1 year",
   24: "2 years",
@@ -44,27 +61,118 @@ const TERM_LABELS: Record<number, string> = {
   60: "5 years",
 };
 
-const DEFAULT_TERM_PRICE: Record<number, number> = {
-  12: Number(process.env.SUBSCRIPTION_BASE_PRICE_12 ?? 9999),
-  24: Number(process.env.SUBSCRIPTION_BASE_PRICE_24 ?? 18999),
-  36: Number(process.env.SUBSCRIPTION_BASE_PRICE_36 ?? 26999),
-  60: Number(process.env.SUBSCRIPTION_BASE_PRICE_60 ?? 41999),
+const ENV_KEYS = [
+  "SUBSCRIPTION_BASE_PRICE_12",
+  "SUBSCRIPTION_BASE_PRICE_24",
+  "SUBSCRIPTION_BASE_PRICE_36",
+  "SUBSCRIPTION_BASE_PRICE_60",
+  "SUBSCRIPTION_PRICE_MULTIPLIER_STARTER",
+  "SUBSCRIPTION_PRICE_MULTIPLIER_GROWTH",
+  "SUBSCRIPTION_PRICE_MULTIPLIER_BUSINESS",
+  "SUBSCRIPTION_PRICE_MULTIPLIER_ENTERPRISE",
+  "SUBSCRIPTION_PRICE_MULTIPLIER_CUSTOM",
+  "SUBSCRIPTION_EXTRA_BRANCH_PRICE",
+  "SUBSCRIPTION_EXTRA_USER_PRICE",
+  "SUBSCRIPTION_ONBOARDING_FEE",
+  "SUBSCRIPTION_REFERRAL_DISCOUNT",
+  "SUBSCRIPTION_GST_PERCENT",
+  "SUBSCRIPTION_CURRENCY",
+] as const;
+
+function safeNumber(value: number, fallback: number): number {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function envNumber(key: string, fallback: number): number {
+  return safeNumber(Number(process.env[key] ?? fallback), fallback);
+}
+
+/** Env defaults — always the fallback layer. */
+export function getSubscriptionPricingConfigFromEnv(): SubscriptionPricingConfig {
+  return {
+    source: "environment",
+    currency: process.env.SUBSCRIPTION_CURRENCY?.trim() || "INR",
+    termBasePrices: {
+      12: envNumber("SUBSCRIPTION_BASE_PRICE_12", 9999),
+      24: envNumber("SUBSCRIPTION_BASE_PRICE_24", 18999),
+      36: envNumber("SUBSCRIPTION_BASE_PRICE_36", 26999),
+      60: envNumber("SUBSCRIPTION_BASE_PRICE_60", 41999),
+    },
+    planMultipliers: {
+      STARTER: envNumber("SUBSCRIPTION_PRICE_MULTIPLIER_STARTER", 1),
+      GROWTH: envNumber("SUBSCRIPTION_PRICE_MULTIPLIER_GROWTH", 1.8),
+      BUSINESS: envNumber("SUBSCRIPTION_PRICE_MULTIPLIER_BUSINESS", 3),
+      ENTERPRISE: envNumber("SUBSCRIPTION_PRICE_MULTIPLIER_ENTERPRISE", 5),
+      CUSTOM: envNumber("SUBSCRIPTION_PRICE_MULTIPLIER_CUSTOM", 1),
+    },
+    addOns: {
+      extraBranchPrice: envNumber("SUBSCRIPTION_EXTRA_BRANCH_PRICE", 2500),
+      extraUserPrice: envNumber("SUBSCRIPTION_EXTRA_USER_PRICE", 750),
+      onboardingFee: envNumber("SUBSCRIPTION_ONBOARDING_FEE", 1500),
+      referralDiscount: envNumber("SUBSCRIPTION_REFERRAL_DISCOUNT", 1000),
+    },
+    gstPercent: envNumber("SUBSCRIPTION_GST_PERCENT", 18),
+    editableViaPlatformPlansApi: [
+      "planName",
+      "limits",
+      "termBasePrices",
+      "planMultipliers",
+      "addOns",
+      "gstPercent",
+      "currency",
+      "publicVisible",
+    ] as const,
+    envKeys: ENV_KEYS,
+  };
+}
+
+export type SubscriptionPricingPatch = {
+  currency?: string;
+  termBasePrices?: Partial<{ 12: number; 24: number; 36: number; 60: number }>;
+  planMultipliers?: Partial<Record<PlanCode, number>>;
+  addOns?: Partial<{
+    extraBranchPrice: number;
+    extraUserPrice: number;
+    onboardingFee: number;
+    referralDiscount: number;
+  }>;
+  gstPercent?: number;
 };
 
-const PLAN_TERM_MULTIPLIER: Record<PlanCode, number> = {
-  STARTER: Number(process.env.SUBSCRIPTION_PRICE_MULTIPLIER_STARTER ?? 1),
-  GROWTH: Number(process.env.SUBSCRIPTION_PRICE_MULTIPLIER_GROWTH ?? 1.8),
-  BUSINESS: Number(process.env.SUBSCRIPTION_PRICE_MULTIPLIER_BUSINESS ?? 3),
-  ENTERPRISE: Number(process.env.SUBSCRIPTION_PRICE_MULTIPLIER_ENTERPRISE ?? 5),
-  CUSTOM: Number(process.env.SUBSCRIPTION_PRICE_MULTIPLIER_CUSTOM ?? 1),
-};
-
-const EXTRA_BRANCH_PRICE = Number(process.env.SUBSCRIPTION_EXTRA_BRANCH_PRICE ?? 2500);
-const EXTRA_USER_PRICE = Number(process.env.SUBSCRIPTION_EXTRA_USER_PRICE ?? 750);
-const ONBOARDING_FEE = Number(process.env.SUBSCRIPTION_ONBOARDING_FEE ?? 1500);
-const REFERRAL_DISCOUNT = Number(process.env.SUBSCRIPTION_REFERRAL_DISCOUNT ?? 1000);
-const GST_PERCENT = Number(process.env.SUBSCRIPTION_GST_PERCENT ?? 18);
-const CURRENCY = process.env.SUBSCRIPTION_CURRENCY?.trim() || "INR";
+export function mergeSubscriptionPricingConfig(
+  base: SubscriptionPricingConfig,
+  patch: SubscriptionPricingPatch | null | undefined,
+  source: "environment" | "platform_settings" = patch ? "platform_settings" : base.source
+): SubscriptionPricingConfig {
+  if (!patch) return { ...base, source: base.source };
+  return {
+    ...base,
+    source,
+    currency: typeof patch.currency === "string" && patch.currency.trim() ? patch.currency.trim() : base.currency,
+    termBasePrices: {
+      12: safeNumber(patch.termBasePrices?.[12] ?? base.termBasePrices[12], base.termBasePrices[12]),
+      24: safeNumber(patch.termBasePrices?.[24] ?? base.termBasePrices[24], base.termBasePrices[24]),
+      36: safeNumber(patch.termBasePrices?.[36] ?? base.termBasePrices[36], base.termBasePrices[36]),
+      60: safeNumber(patch.termBasePrices?.[60] ?? base.termBasePrices[60], base.termBasePrices[60]),
+    },
+    planMultipliers: (() => {
+      const merged: Record<string, number> = { ...base.planMultipliers };
+      for (const [code, value] of Object.entries(patch.planMultipliers ?? {})) {
+        if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+          merged[code] = value;
+        }
+      }
+      return merged;
+    })(),
+    addOns: {
+      extraBranchPrice: safeNumber(patch.addOns?.extraBranchPrice ?? base.addOns.extraBranchPrice, 0),
+      extraUserPrice: safeNumber(patch.addOns?.extraUserPrice ?? base.addOns.extraUserPrice, 0),
+      onboardingFee: safeNumber(patch.addOns?.onboardingFee ?? base.addOns.onboardingFee, 0),
+      referralDiscount: safeNumber(patch.addOns?.referralDiscount ?? base.addOns.referralDiscount, 0),
+    },
+    gstPercent: safeNumber(patch.gstPercent ?? base.gstPercent, 0),
+  };
+}
 
 const REFERRAL_CODE_REGEX = /^[A-Z0-9-]{4,24}$/;
 
@@ -76,10 +184,6 @@ function clampNonNegativeInt(value: unknown): number {
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
-}
-
-function safeNumber(value: number, fallback: number): number {
-  return Number.isFinite(value) ? value : fallback;
 }
 
 function validateReferralCode(raw: string | null | undefined): {
@@ -106,7 +210,10 @@ export function calculateSubscriptionPricing(input: {
   limits: PlanLimits;
   isFirstSubscription: boolean;
   payload: SubscriptionPricingInput;
+  /** When omitted, uses env defaults (backward compatible). */
+  pricing?: SubscriptionPricingConfig;
 }): SubscriptionPricingBreakdown {
+  const cfg = input.pricing ?? getSubscriptionPricingConfigFromEnv();
   const termMonths = input.payload.termMonths;
   const termLabel = TERM_LABELS[termMonths] ?? `${termMonths} months`;
   const extraBranches = clampNonNegativeInt(input.payload.extraBranches);
@@ -114,25 +221,28 @@ export function calculateSubscriptionPricing(input: {
   const { code: referralCode, message: referralValidationMessage } = validateReferralCode(
     input.payload.referralCode
   );
-  if (!TERM_LABELS[termMonths]) {
+  if (![12, 24, 36, 60].includes(termMonths)) {
     throw new Error("Unsupported term. Allowed: 12, 24, 36, 60 months.");
   }
 
-  const baseTerm = safeNumber(DEFAULT_TERM_PRICE[termMonths] ?? DEFAULT_TERM_PRICE[12], DEFAULT_TERM_PRICE[12]);
-  const multiplier = safeNumber(PLAN_TERM_MULTIPLIER[input.planCode], 1);
+  const baseTerm = safeNumber(
+    cfg.termBasePrices[termMonths as 12 | 24 | 36 | 60] ?? cfg.termBasePrices[12],
+    cfg.termBasePrices[12]
+  );
+  const multiplier = safeNumber(cfg.planMultipliers[input.planCode], 1);
   const baseAmount = round2(baseTerm * multiplier);
-  const extraBranchCost = round2(extraBranches * safeNumber(EXTRA_BRANCH_PRICE, 0));
-  const extraUserCost = round2(extraUsers * safeNumber(EXTRA_USER_PRICE, 0));
+  const extraBranchCost = round2(extraBranches * safeNumber(cfg.addOns.extraBranchPrice, 0));
+  const extraUserCost = round2(extraUsers * safeNumber(cfg.addOns.extraUserPrice, 0));
   const onboardingApplied = input.isFirstSubscription;
-  const onboardingFee = onboardingApplied ? round2(safeNumber(ONBOARDING_FEE, 0)) : 0;
+  const onboardingFee = onboardingApplied ? round2(safeNumber(cfg.addOns.onboardingFee, 0)) : 0;
 
   const referralEligible = input.isFirstSubscription && Boolean(referralCode) && !referralValidationMessage;
   const referralApplied = referralEligible;
-  const referralDiscount = referralApplied ? round2(safeNumber(REFERRAL_DISCOUNT, 0)) : 0;
+  const referralDiscount = referralApplied ? round2(safeNumber(cfg.addOns.referralDiscount, 0)) : 0;
 
   const subtotal = round2(baseAmount + extraBranchCost + extraUserCost + onboardingFee - referralDiscount);
   const taxable = Math.max(0, subtotal);
-  const gstPercent = safeNumber(GST_PERCENT, 0);
+  const gstPercent = safeNumber(cfg.gstPercent, 0);
   const gstAmount = round2((taxable * gstPercent) / 100);
   const finalAmount = round2(taxable + gstAmount);
 
@@ -164,7 +274,7 @@ export function calculateSubscriptionPricing(input: {
     includedUsers,
     finalAllowedBranches: addCapacity(includedBranches, extraBranches),
     finalAllowedUsers: addCapacity(includedUsers, extraUsers),
-    currency: CURRENCY,
+    currency: cfg.currency,
     isFirstSubscription: input.isFirstSubscription,
   };
 }

@@ -5,7 +5,7 @@
  * - GET  /api/platform/branches
  * - GET  /api/platform/renewals|bills|payments|audit
  * - GET/POST/PATCH /api/platform/referrals
- * - GET/PUT /api/platform/plans
+ * - GET/PUT/POST /api/platform/plans (+ PATCH/DELETE /plans/:code)
  * - GET/PUT /api/platform/settings
  * - GET  /api/platform/messaging
  * - POST /api/platform/organizations/:orgId/suspend|restore
@@ -13,15 +13,19 @@
 
 import type { Request, Response, NextFunction } from "express";
 import { z } from "zod";
-import type { PlanCode, Prisma, UserRole } from "@prisma/client";
+import type { Prisma, UserRole } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
 import { AppHttpError } from "../../lib/app-http-error.js";
 import { writePlatformAuditLog } from "../../lib/platform-audit.js";
 import { env } from "../../config/env.js";
-import { PLAN_CATALOG, parsePlanLimits } from "../../lib/plan-catalog.js";
+import { normalizePlanCode, parsePlanLimits } from "../../lib/plan-catalog.js";
+import type { SubscriptionPricingPatch } from "../../lib/subscription-pricing.js";
 import {
+  createPlatformPlan,
+  deletePlatformPlan,
   getEffectivePlanCatalog,
   getPlatformSettings,
+  updatePlatformPlan,
   updatePlatformSettings,
   type PlatformSettingsPayload,
 } from "../../lib/platform-settings.js";
@@ -60,7 +64,12 @@ function parseBoolQuery(raw: unknown): boolean | undefined {
   return undefined;
 }
 
-const PLAN_CODE_ENUM = z.enum(["STARTER", "GROWTH", "BUSINESS", "ENTERPRISE", "CUSTOM"]);
+const PLAN_CODE_STRING = z
+  .string()
+  .min(2)
+  .max(24)
+  .transform((s) => normalizePlanCode(s))
+  .refine((s) => /^[A-Z][A-Z0-9_]{1,23}$/.test(s), "Invalid plan code");
 
 // ─── GET /api/platform/dashboard ─────────────────────────────────────────────
 
@@ -679,11 +688,12 @@ export async function patchPlatformReferral(req: Request, res: Response, next: N
 export async function getPlatformPlans(req: Request, res: Response, next: NextFunction) {
   try {
     const settings = await getPlatformSettings();
-    const plans = getEffectivePlanCatalog(settings.planOverrides);
+    const plans = getEffectivePlanCatalog(settings.planCatalog);
     res.json({
       data: {
         plans,
         overrides: settings.planOverrides,
+        pricing: settings.subscriptionPricing,
       },
       error: null,
     });
@@ -698,6 +708,28 @@ const planLimitsSchema = z.object({
   maxCustomers: z.number().int().min(0).nullable().optional(),
 });
 
+const pricingPatchSchema = z.object({
+  currency: z.string().min(1).max(8).optional(),
+  gstPercent: z.number().min(0).max(100).optional(),
+  termBasePrices: z
+    .object({
+      12: z.number().min(0).optional(),
+      24: z.number().min(0).optional(),
+      36: z.number().min(0).optional(),
+      60: z.number().min(0).optional(),
+    })
+    .optional(),
+  planMultipliers: z.record(z.string(), z.number().min(0)).optional(),
+  addOns: z
+    .object({
+      extraBranchPrice: z.number().min(0).optional(),
+      extraUserPrice: z.number().min(0).optional(),
+      onboardingFee: z.number().min(0).optional(),
+      referralDiscount: z.number().min(0).optional(),
+    })
+    .optional(),
+}).optional();
+
 const putPlansSchema = z.object({
   planOverrides: z
     .record(
@@ -705,11 +737,21 @@ const putPlansSchema = z.object({
       z.object({
         planName: z.string().min(1).max(80).optional(),
         limits: planLimitsSchema.optional(),
+        publicVisible: z.boolean().optional(),
       })
     )
     .optional()
     .default({}),
+  pricing: pricingPatchSchema,
 });
+
+function plansResponse(settings: Awaited<ReturnType<typeof getPlatformSettings>>) {
+  return {
+    plans: getEffectivePlanCatalog(settings.planCatalog),
+    overrides: settings.planOverrides,
+    pricing: settings.subscriptionPricing,
+  };
+}
 
 // ─── PUT /api/platform/plans ─────────────────────────────────────────────────
 
@@ -718,44 +760,167 @@ export async function putPlatformPlans(req: Request, res: Response, next: NextFu
     const body = putPlansSchema.parse(req.body ?? {});
     const actor = actorFromReq(req);
     const before = await getPlatformSettings();
+    const known = new Set(before.planCatalog.map((p) => p.planCode));
 
     const planOverrides: PlatformSettingsPayload["planOverrides"] = {};
-    for (const [code, override] of Object.entries(body.planOverrides ?? {})) {
-      if (!PLAN_CODE_ENUM.safeParse(code).success) continue;
-      const planCode = code as PlanCode;
-      if (!PLAN_CATALOG[planCode]) continue;
+    for (const [codeRaw, override] of Object.entries(body.planOverrides ?? {})) {
+      const planCode = normalizePlanCode(codeRaw);
+      if (!known.has(planCode)) continue;
+      const existing = before.planCatalog.find((p) => p.planCode === planCode)!;
       planOverrides[planCode] = {
         ...(override.planName ? { planName: override.planName } : {}),
         ...(override.limits
           ? {
               limits: parsePlanLimits({
-                ...PLAN_CATALOG[planCode].limits,
+                ...existing.limits,
                 ...override.limits,
               }),
             }
           : {}),
+        ...(override.publicVisible !== undefined ? { publicVisible: override.publicVisible } : {}),
       };
     }
 
+    const pricingPatch: SubscriptionPricingPatch | undefined = body.pricing
+      ? {
+          ...(body.pricing.currency !== undefined ? { currency: body.pricing.currency } : {}),
+          ...(body.pricing.gstPercent !== undefined ? { gstPercent: body.pricing.gstPercent } : {}),
+          ...(body.pricing.termBasePrices ? { termBasePrices: body.pricing.termBasePrices } : {}),
+          ...(body.pricing.planMultipliers
+            ? {
+                planMultipliers: Object.fromEntries(
+                  Object.entries(body.pricing.planMultipliers).map(([k, v]) => [
+                    normalizePlanCode(k),
+                    v,
+                  ])
+                ) as SubscriptionPricingPatch["planMultipliers"],
+              }
+            : {}),
+          ...(body.pricing.addOns ? { addOns: body.pricing.addOns } : {}),
+        }
+      : undefined;
+
+    const patch: PlatformSettingsPayload = {
+      ...(Object.keys(planOverrides).length ? { planOverrides } : {}),
+      ...(pricingPatch ? { subscriptionPricing: pricingPatch } : {}),
+      ...(pricingPatch?.gstPercent !== undefined
+        ? { defaultGstPercent: pricingPatch.gstPercent }
+        : {}),
+    };
+
     const settings = await updatePlatformSettings({
-      patch: { planOverrides },
+      patch,
       updatedBy: actor,
     });
 
     await writePlatformAuditLog({
       actor,
       action: "plans.updated",
-      before: { planOverrides: before.planOverrides },
-      after: { planOverrides: settings.planOverrides },
+      before: {
+        planCatalog: before.planCatalog,
+        pricing: before.subscriptionPricing,
+      },
+      after: {
+        planCatalog: settings.planCatalog,
+        pricing: settings.subscriptionPricing,
+      },
     });
 
-    res.json({
-      data: {
-        plans: getEffectivePlanCatalog(settings.planOverrides),
-        overrides: settings.planOverrides,
+    res.json({ data: plansResponse(settings), error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+const createPlanSchema = z.object({
+  planCode: PLAN_CODE_STRING,
+  planName: z.string().min(1).max(80),
+  limits: planLimitsSchema.optional(),
+  publicVisible: z.boolean().optional().default(true),
+  multiplier: z.number().min(0).optional().default(1),
+});
+
+// ─── POST /api/platform/plans ────────────────────────────────────────────────
+
+export async function postPlatformPlan(req: Request, res: Response, next: NextFunction) {
+  try {
+    const body = createPlanSchema.parse(req.body ?? {});
+    const actor = actorFromReq(req);
+    const before = await getPlatformSettings();
+    const settings = await createPlatformPlan(
+      {
+        planCode: body.planCode,
+        planName: body.planName,
+        limits: body.limits ? parsePlanLimits(body.limits) : undefined,
+        publicVisible: body.publicVisible,
+        multiplier: body.multiplier,
       },
-      error: null,
+      actor
+    );
+    await writePlatformAuditLog({
+      actor,
+      action: "plans.created",
+      before: { planCatalog: before.planCatalog },
+      after: { planCatalog: settings.planCatalog, created: body.planCode },
     });
+    res.status(201).json({ data: plansResponse(settings), error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+const patchPlanSchema = z.object({
+  planName: z.string().min(1).max(80).optional(),
+  limits: planLimitsSchema.optional(),
+  publicVisible: z.boolean().optional(),
+  multiplier: z.number().min(0).optional(),
+});
+
+// ─── PATCH /api/platform/plans/:code ─────────────────────────────────────────
+
+export async function patchPlatformPlan(req: Request, res: Response, next: NextFunction) {
+  try {
+    const code = PLAN_CODE_STRING.parse(req.params.code);
+    const body = patchPlanSchema.parse(req.body ?? {});
+    const actor = actorFromReq(req);
+    const before = await getPlatformSettings();
+    const settings = await updatePlatformPlan(
+      code,
+      {
+        planName: body.planName,
+        limits: body.limits ? parsePlanLimits(body.limits) : undefined,
+        publicVisible: body.publicVisible,
+        multiplier: body.multiplier,
+      },
+      actor
+    );
+    await writePlatformAuditLog({
+      actor,
+      action: "plans.patched",
+      before: { plan: before.planCatalog.find((p) => p.planCode === code) ?? null },
+      after: { plan: settings.planCatalog.find((p) => p.planCode === code) ?? null },
+    });
+    res.json({ data: plansResponse(settings), error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// ─── DELETE /api/platform/plans/:code ────────────────────────────────────────
+
+export async function deletePlatformPlanHandler(req: Request, res: Response, next: NextFunction) {
+  try {
+    const code = PLAN_CODE_STRING.parse(req.params.code);
+    const actor = actorFromReq(req);
+    const before = await getPlatformSettings();
+    const settings = await deletePlatformPlan(code, actor);
+    await writePlatformAuditLog({
+      actor,
+      action: "plans.deleted",
+      before: { plan: before.planCatalog.find((p) => p.planCode === code) ?? null },
+      after: { planCatalog: settings.planCatalog },
+    });
+    res.json({ data: plansResponse(settings), error: null });
   } catch (e) {
     next(e);
   }

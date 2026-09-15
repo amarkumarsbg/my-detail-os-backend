@@ -1,13 +1,14 @@
 import type {
   OrganizationSubscription,
-  PlanCode,
   Prisma,
   SubscriptionPaymentStatus,
   SubscriptionStatus,
 } from "@prisma/client";
+import type { PlanCode } from "../../lib/plan-catalog.js";
 import { prisma } from "../../lib/prisma.js";
 import { AppHttpError } from "../../lib/app-http-error.js";
 import {
+  DEFAULT_PLAN_CATALOG,
   PLAN_CATALOG,
   canCreateWithLimit,
   effectiveMaxBranches,
@@ -20,6 +21,7 @@ import {
   type SubscriptionPricingBreakdown,
   type SubscriptionPricingInput,
 } from "../../lib/subscription-pricing.js";
+import { getPlanTemplate, getResolvedSubscriptionPricing } from "../../lib/platform-settings.js";
 import {
   addMonths,
   daysUntilExpiry,
@@ -329,7 +331,10 @@ export async function patchOrganizationSubscription(
   let nextLimits = input.limits ? parsePlanLimits(input.limits) : parsePlanLimits(sub.limits);
 
   if (input.planCode && !input.limits) {
-    const template = PLAN_CATALOG[input.planCode];
+    const template = await getPlanTemplate(input.planCode);
+    if (!template) {
+      throw new AppHttpError(400, `Unknown plan code: ${input.planCode}`, "UNKNOWN_PLAN");
+    }
     nextLimits = { ...template.limits };
     if (!input.planName) nextPlanName = template.planName;
   }
@@ -428,7 +433,7 @@ export async function ensureDefaultOrganization(opts?: {
   const name = opts?.name ?? "Prime Detailers";
   const branchCount = await prisma.branch.count();
   const maxBranches = opts?.maxBranches ?? Math.max(1, branchCount);
-  const maxStaff = PLAN_CATALOG.STARTER.limits.maxStaff ?? 3;
+  const maxStaff = DEFAULT_PLAN_CATALOG.find((p) => p.planCode === "STARTER")?.limits.maxStaff ?? 3;
   const termMonths = 12;
   const { startsAt, expiresAt } = defaultPeriodDates(termMonths);
 
@@ -530,11 +535,13 @@ export async function getSubscriptionPricingQuote(
   }
   const isFirstSubscription = await isFirstSubscriptionForOrg(organizationId);
   const limits = normalizedLimitsForSubscription(org.subscription);
+  const pricing = await getResolvedSubscriptionPricing();
   const breakdown = calculateSubscriptionPricing({
     planCode: org.subscription.planCode,
     planName: org.subscription.planName,
     limits,
     isFirstSubscription,
+    pricing,
     payload,
   });
   return { breakdown };

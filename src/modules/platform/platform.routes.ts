@@ -20,6 +20,9 @@ import {
   patchPlatformReferral,
   getPlatformPlans,
   putPlatformPlans,
+  postPlatformPlan,
+  patchPlatformPlan,
+  deletePlatformPlanHandler,
   getPlatformSettingsHandler,
   putPlatformSettingsHandler,
   getPlatformMessagingStatus,
@@ -58,6 +61,9 @@ platformRouter.patch("/referrals/:id", patchPlatformReferral);
 
 platformRouter.get("/plans", getPlatformPlans);
 platformRouter.put("/plans", putPlatformPlans);
+platformRouter.post("/plans", postPlatformPlan);
+platformRouter.patch("/plans/:code", patchPlatformPlan);
+platformRouter.delete("/plans/:code", deletePlatformPlanHandler);
 
 platformRouter.get("/settings", getPlatformSettingsHandler);
 platformRouter.put("/settings", putPlatformSettingsHandler);

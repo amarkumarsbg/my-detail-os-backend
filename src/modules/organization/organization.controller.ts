@@ -179,7 +179,7 @@ export async function getPlatformOrganization(req: Request, res: Response, next:
 }
 
 const patchSchema = z.object({
-  planCode: z.enum(["STARTER", "GROWTH", "BUSINESS", "ENTERPRISE", "CUSTOM"]).optional(),
+  planCode: z.string().min(2).max(24).regex(/^[A-Z][A-Z0-9_]{1,23}$/).optional(),
   planName: z.string().min(1).optional(),
   status: z.enum(["ACTIVE", "PAST_DUE", "EXPIRED", "CANCELLED", "TRIAL"]).optional(),
   limits: z

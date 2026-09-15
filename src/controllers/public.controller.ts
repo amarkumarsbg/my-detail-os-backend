@@ -1,8 +1,11 @@
 import type { Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { PLAN_CATALOG } from "../lib/plan-catalog.js";
 import { calculateSubscriptionPricing } from "../lib/subscription-pricing.js";
+import {
+  getEffectivePlanCatalogFromDb,
+  getResolvedSubscriptionPricing,
+} from "../lib/platform-settings.js";
 
 type LimiterState = { count: number; resetAt: number };
 
@@ -70,7 +73,7 @@ const contactSchema = z.object({
 });
 
 const publicPricingSchema = z.object({
-  planCode: z.enum(["STARTER", "GROWTH", "BUSINESS", "ENTERPRISE", "CUSTOM"]).default("STARTER"),
+  planCode: z.string().min(2).max(24).transform((s) => s.trim().toUpperCase().replace(/[\s-]+/g, "_")).default("STARTER"),
   termMonths: z.union([z.literal(12), z.literal(24), z.literal(36), z.literal(60)]),
   extraBranches: z.number().int().nonnegative().default(0),
   extraUsers: z.number().int().nonnegative().default(0),
@@ -177,12 +180,24 @@ export async function postPublicPricingQuote(req: Request, res: Response, next: 
     }
 
     const body = publicPricingSchema.parse(req.body ?? {});
-    const plan = PLAN_CATALOG[body.planCode];
+    const [catalog, pricing] = await Promise.all([
+      getEffectivePlanCatalogFromDb(),
+      getResolvedSubscriptionPricing(),
+    ]);
+    const plan = catalog.find((p) => p.planCode === body.planCode);
+    if (!plan || !plan.publicVisible) {
+      res.status(404).json({
+        data: null,
+        error: { message: "Plan not found or not available.", code: "PLAN_NOT_FOUND" },
+      });
+      return;
+    }
     const breakdown = calculateSubscriptionPricing({
       planCode: plan.planCode,
       planName: plan.planName,
       limits: plan.limits,
       isFirstSubscription: body.isFirstSubscription ?? true,
+      pricing,
       payload: {
         termMonths: body.termMonths,
         extraBranches: body.extraBranches,
@@ -192,6 +207,45 @@ export async function postPublicPricingQuote(req: Request, res: Response, next: 
     });
 
     res.json({ data: { breakdown }, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+
+export async function getPublicPlans(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const [catalog, pricing] = await Promise.all([
+      getEffectivePlanCatalogFromDb(),
+      getResolvedSubscriptionPricing(),
+    ]);
+    const plans = catalog
+      .filter((p) => p.publicVisible)
+      .map((p) => {
+        const annualBase = pricing.termBasePrices[12] * (pricing.planMultipliers[p.planCode] ?? 1);
+        return {
+          planCode: p.planCode,
+          planName: p.planName,
+          limits: p.limits,
+          annualPrice: Math.round(annualBase * 100) / 100,
+          currency: pricing.currency,
+          gstPercent: pricing.gstPercent,
+        };
+      });
+    res.json({
+      data: {
+        plans,
+        pricing: {
+          currency: pricing.currency,
+          gstPercent: pricing.gstPercent,
+          termBasePrices: pricing.termBasePrices,
+          planMultipliers: pricing.planMultipliers,
+          addOns: pricing.addOns,
+          source: pricing.source,
+        },
+      },
+      error: null,
+    });
   } catch (e) {
     next(e);
   }

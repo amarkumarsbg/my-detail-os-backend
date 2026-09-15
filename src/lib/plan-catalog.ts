@@ -1,10 +1,11 @@
-import type { PlanCode } from "@prisma/client";
-
 export type PlanLimits = {
   maxBranches: number | null;
   maxStaff?: number | null;
   maxCustomers?: number | null;
 };
+
+/** Dynamic plan code (was Prisma enum; now free-form string). */
+export type PlanCode = string;
 
 export type PlanTemplate = {
   planCode: PlanCode;
@@ -12,33 +13,64 @@ export type PlanTemplate = {
   limits: PlanLimits;
 };
 
-export const PLAN_CATALOG: Record<PlanCode, PlanTemplate> = {
-  STARTER: {
+export type DynamicPlanDefinition = PlanTemplate & {
+  publicVisible: boolean;
+  /** Built-in seed plans can still be deleted if unused. */
+  isBuiltIn?: boolean;
+};
+
+/** Seed catalog used when PlatformSettings has no planCatalog yet. */
+export const DEFAULT_PLAN_CATALOG: DynamicPlanDefinition[] = [
+  {
     planCode: "STARTER",
     planName: "Starter",
     limits: { maxBranches: 1, maxStaff: 3 },
+    publicVisible: true,
+    isBuiltIn: true,
   },
-  GROWTH: {
+  {
     planCode: "GROWTH",
     planName: "Growth",
     limits: { maxBranches: 3, maxStaff: 10 },
+    publicVisible: true,
+    isBuiltIn: true,
   },
-  BUSINESS: {
+  {
     planCode: "BUSINESS",
     planName: "Business",
     limits: { maxBranches: 10, maxStaff: 25 },
+    publicVisible: true,
+    isBuiltIn: true,
   },
-  ENTERPRISE: {
+  {
     planCode: "ENTERPRISE",
     planName: "Enterprise",
     limits: { maxBranches: null, maxStaff: null },
+    publicVisible: true,
+    isBuiltIn: true,
   },
-  CUSTOM: {
+  {
     planCode: "CUSTOM",
     planName: "Custom",
     limits: { maxBranches: 1, maxStaff: 3 },
+    publicVisible: false,
+    isBuiltIn: true,
   },
-};
+];
+
+/** @deprecated Use getEffectivePlanCatalogFromDb / DEFAULT_PLAN_CATALOG */
+export const PLAN_CATALOG: Record<string, PlanTemplate> = Object.fromEntries(
+  DEFAULT_PLAN_CATALOG.map((p) => [
+    p.planCode,
+    { planCode: p.planCode, planName: p.planName, limits: p.limits },
+  ])
+);
+
+export const PLAN_CODE_REGEX = /^[A-Z][A-Z0-9_]{1,23}$/;
+
+export function normalizePlanCode(raw: string): string {
+  return raw.trim().toUpperCase().replace(/[\s-]+/g, "_");
+}
 
 export function parsePlanLimits(raw: unknown): PlanLimits {
   if (!raw || typeof raw !== "object") {
@@ -78,7 +110,6 @@ export function effectiveMaxBranches(
   return limits.maxBranches;
 }
 
-/** Same override semantics as `effectiveMaxBranches`, but for the user/staff seat limit. */
 export function effectiveMaxUsers(
   limits: PlanLimits,
   maxUsersOverride: number | null | undefined

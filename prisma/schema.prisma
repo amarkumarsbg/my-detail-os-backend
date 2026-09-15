@@ -18,14 +18,6 @@ enum UserRole {
   MECHANIC
 }
 
-enum PlanCode {
-  STARTER
-  GROWTH
-  BUSINESS
-  ENTERPRISE
-  CUSTOM
-}
-
 enum SubscriptionStatus {
   ACTIVE
   PAST_DUE
@@ -116,7 +108,7 @@ model OrganizationSubscription {
   id                  String                    @id @default(cuid())
   organizationId      String                    @unique
   organization        Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  planCode            PlanCode
+  planCode            String
   planName            String
   status              SubscriptionStatus        @default(ACTIVE)
   /**
