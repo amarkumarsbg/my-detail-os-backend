@@ -8,12 +8,21 @@ import {
   postPlatformVerifyPayment,
 } from "../organization/organization.controller.js";
 import {
+  getPlatformDashboard,
+  listPlatformUsers,
+  listPlatformBranches,
   listPlatformRenewals,
   listPlatformBills,
   listPlatformPayments,
   listPlatformAudit,
   listPlatformReferrals,
   createPlatformReferral,
+  patchPlatformReferral,
+  getPlatformPlans,
+  putPlatformPlans,
+  getPlatformSettingsHandler,
+  putPlatformSettingsHandler,
+  getPlatformMessagingStatus,
   suspendOrganization,
   restoreOrganization,
 } from "./platform.controller.js";
@@ -21,6 +30,11 @@ import {
 export const platformRouter = Router();
 
 platformRouter.use(requirePlatformAuth);
+
+platformRouter.get("/dashboard", getPlatformDashboard);
+
+platformRouter.get("/users", listPlatformUsers);
+platformRouter.get("/branches", listPlatformBranches);
 
 // Existing org endpoints
 platformRouter.get("/organizations", listPlatformOrganizations);
@@ -40,3 +54,12 @@ platformRouter.get("/payments", listPlatformPayments);
 platformRouter.get("/audit", listPlatformAudit);
 platformRouter.get("/referrals", listPlatformReferrals);
 platformRouter.post("/referrals", createPlatformReferral);
+platformRouter.patch("/referrals/:id", patchPlatformReferral);
+
+platformRouter.get("/plans", getPlatformPlans);
+platformRouter.put("/plans", putPlatformPlans);
+
+platformRouter.get("/settings", getPlatformSettingsHandler);
+platformRouter.put("/settings", putPlatformSettingsHandler);
+
+platformRouter.get("/messaging", getPlatformMessagingStatus);

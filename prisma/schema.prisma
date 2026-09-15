@@ -31,6 +31,7 @@ enum SubscriptionStatus {
   PAST_DUE
   EXPIRED
   CANCELLED
+  TRIAL
 }
 
 enum SubscriptionPaymentStatus {
@@ -70,14 +71,17 @@ model Organization {
 }
 
 model PlatformAuditLog {
-  id             String       @id @default(cuid())
-  organizationId String
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id             String        @id @default(cuid())
+  /**
+   * Null for platform-wide actions (settings/plans/referrals) that are not org-scoped.
+   */
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   actor          String
   action         String
   before         Json?
   after          Json?
-  createdAt      DateTime     @default(now())
+  createdAt      DateTime      @default(now())
 
   @@index([organizationId, createdAt])
 }
@@ -94,6 +98,18 @@ model PlatformReferralCode {
   notes          String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+}
+
+/**
+ * Singleton platform control-plane settings (id = "default").
+ * Holds trial/billing defaults and optional plan catalog overrides.
+ * Provider secrets (Twilio/Resend) stay in env — never stored here.
+ */
+model PlatformSettings {
+  id        String   @id @default("default")
+  payload   Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?
 }
 
 model OrganizationSubscription {

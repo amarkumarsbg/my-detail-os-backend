@@ -181,7 +181,7 @@ export async function getPlatformOrganization(req: Request, res: Response, next:
 const patchSchema = z.object({
   planCode: z.enum(["STARTER", "GROWTH", "BUSINESS", "ENTERPRISE", "CUSTOM"]).optional(),
   planName: z.string().min(1).optional(),
-  status: z.enum(["ACTIVE", "PAST_DUE", "EXPIRED", "CANCELLED"]).optional(),
+  status: z.enum(["ACTIVE", "PAST_DUE", "EXPIRED", "CANCELLED", "TRIAL"]).optional(),
   limits: z
     .object({
       maxBranches: z.number().int().nonnegative().nullable(),

@@ -1,20 +1,35 @@
 /**
  * Platform control-plane handlers:
- * - GET /api/platform/renewals       — cross-org renewal history (from bills)
- * - GET /api/platform/bills          — cross-org subscription bills
- * - GET /api/platform/payments       — cross-org subscription payments
- * - GET /api/platform/audit          — cross-org platform audit log
- * - GET /api/platform/referrals      — list platform referral codes
- * - POST /api/platform/referrals     — create a platform referral code
- * - POST /api/platform/organizations/:orgId/suspend
- * - POST /api/platform/organizations/:orgId/restore
+ * - GET  /api/platform/dashboard
+ * - GET  /api/platform/users
+ * - GET  /api/platform/branches
+ * - GET  /api/platform/renewals|bills|payments|audit
+ * - GET/POST/PATCH /api/platform/referrals
+ * - GET/PUT /api/platform/plans
+ * - GET/PUT /api/platform/settings
+ * - GET  /api/platform/messaging
+ * - POST /api/platform/organizations/:orgId/suspend|restore
  */
 
 import type { Request, Response, NextFunction } from "express";
 import { z } from "zod";
+import type { PlanCode, Prisma, UserRole } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
 import { AppHttpError } from "../../lib/app-http-error.js";
 import { writePlatformAuditLog } from "../../lib/platform-audit.js";
+import { env } from "../../config/env.js";
+import { PLAN_CATALOG, parsePlanLimits } from "../../lib/plan-catalog.js";
+import {
+  getEffectivePlanCatalog,
+  getPlatformSettings,
+  updatePlatformSettings,
+  type PlatformSettingsPayload,
+} from "../../lib/platform-settings.js";
+import {
+  isTwilioSmsEnabled,
+  isTwilioWhatsAppEnabled,
+} from "../../services/twilio-sms.service.js";
+import { isResendConfigured } from "../../services/resend-send.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -26,18 +41,227 @@ function actorFromReq(req: Request): string {
   return platformActor ?? "platform-api-key";
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 function parseDateFilter(raw: unknown): Date | undefined {
   if (!raw || typeof raw !== "string") return undefined;
   const d = new Date(raw);
   return Number.isNaN(d.getTime()) ? undefined : d;
 }
 
-function pageParams(query: Record<string, unknown>): { skip: number; take: number } {
-  const take = Math.min(Number(query.limit ?? 100), 200);
-  const page = Math.max(Number(query.page ?? 1), 1);
-  return { skip: (page - 1) * take, take };
+function pageParams(query: Record<string, unknown>): { skip: number; take: number; page: number } {
+  const take = Math.min(Math.max(Number(query.limit ?? 100) || 100, 1), 200);
+  const page = Math.max(Number(query.page ?? 1) || 1, 1);
+  return { skip: (page - 1) * take, take, page };
+}
+
+function parseBoolQuery(raw: unknown): boolean | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (raw === true || raw === "true" || raw === "1") return true;
+  if (raw === false || raw === "false" || raw === "0") return false;
+  return undefined;
+}
+
+const PLAN_CODE_ENUM = z.enum(["STARTER", "GROWTH", "BUSINESS", "ENTERPRISE", "CUSTOM"]);
+
+// ─── GET /api/platform/dashboard ─────────────────────────────────────────────
+
+export async function getPlatformDashboard(req: Request, res: Response, next: NextFunction) {
+  try {
+    const now = new Date();
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+
+    const [
+      orgTotal,
+      orgActive,
+      orgInactive,
+      subsByStatus,
+      mtdPaidAgg,
+      pendingPayments,
+      activeReferrals,
+    ] = await Promise.all([
+      prisma.organization.count(),
+      prisma.organization.count({ where: { isActive: true } }),
+      prisma.organization.count({ where: { isActive: false } }),
+      prisma.organizationSubscription.groupBy({
+        by: ["status"],
+        _count: { _all: true },
+      }),
+      prisma.subscriptionPayment.aggregate({
+        where: {
+          status: "PAID",
+          OR: [
+            { verifiedAt: { gte: monthStart } },
+            { verifiedAt: null, createdAt: { gte: monthStart } },
+          ],
+        },
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+      prisma.subscriptionPayment.count({ where: { status: "PENDING" } }),
+      prisma.platformReferralCode.count({ where: { isActive: true } }),
+    ]);
+
+    const subscriptionStatusBreakdown: Record<string, number> = {};
+    for (const row of subsByStatus) {
+      subscriptionStatusBreakdown[row.status] = row._count._all;
+    }
+
+    res.json({
+      data: {
+        organizations: {
+          total: orgTotal,
+          active: orgActive,
+          inactive: orgInactive,
+        },
+        subscriptionStatusBreakdown,
+        revenueMtd: {
+          amount: mtdPaidAgg._sum.amount ?? 0,
+          paidPaymentCount: mtdPaidAgg._count._all,
+          currency: "INR",
+          periodStart: monthStart.toISOString(),
+        },
+        pendingPayments,
+        activeReferrals,
+      },
+      error: null,
+    });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// ─── GET /api/platform/users ─────────────────────────────────────────────────
+
+export async function listPlatformUsers(req: Request, res: Response, next: NextFunction) {
+  try {
+    const q = req.query as Record<string, unknown>;
+    const { skip, take } = pageParams(q);
+    const orgId = typeof q.orgId === "string" ? q.orgId : undefined;
+    const role = typeof q.role === "string" ? q.role : undefined;
+    const isActive = parseBoolQuery(q.isActive);
+    const search = typeof q.search === "string" ? q.search.trim() : undefined;
+    const includePlatformOwner = parseBoolQuery(q.includePlatformOwner) === true;
+
+    const where: Prisma.UserWhereInput = {
+      ...(orgId ? { organizationId: orgId } : {}),
+      ...(isActive !== undefined ? { isActive } : {}),
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search, mode: "insensitive" } },
+              { email: { contains: search, mode: "insensitive" } },
+              { phone: { contains: search, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    };
+
+    if (role) {
+      where.role = role as UserRole;
+    } else if (!includePlatformOwner) {
+      where.role = { not: "PLATFORM_OWNER" };
+    }
+
+    const [rows, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+          role: true,
+          isActive: true,
+          branchId: true,
+          organizationId: true,
+          lastLoginAt: true,
+          organization: { select: { id: true, name: true } },
+          branch: { select: { id: true, name: true } },
+        },
+        orderBy: [{ organizationId: "asc" }, { name: "asc" }],
+        skip,
+        take,
+      }),
+      prisma.user.count({ where }),
+    ]);
+
+    const users = rows.map((u) => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      phone: u.phone,
+      role: u.role,
+      isActive: u.isActive,
+      branchId: u.branchId,
+      branchName: u.branch.name,
+      organizationId: u.organizationId,
+      organizationName: u.organization.name,
+      lastLoginAt: u.lastLoginAt?.toISOString() ?? null,
+    }));
+
+    res.json({ data: { users, total }, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// ─── GET /api/platform/branches ──────────────────────────────────────────────
+
+export async function listPlatformBranches(req: Request, res: Response, next: NextFunction) {
+  try {
+    const q = req.query as Record<string, unknown>;
+    const { skip, take } = pageParams(q);
+    const orgId = typeof q.orgId === "string" ? q.orgId : undefined;
+    const isActive = parseBoolQuery(q.isActive);
+    const search = typeof q.search === "string" ? q.search.trim() : undefined;
+
+    const where: Prisma.BranchWhereInput = {
+      ...(orgId ? { organizationId: orgId } : {}),
+      ...(isActive !== undefined ? { isActive } : {}),
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search, mode: "insensitive" } },
+              { city: { contains: search, mode: "insensitive" } },
+              { code: { contains: search, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    };
+
+    const [rows, total] = await Promise.all([
+      prisma.branch.findMany({
+        where,
+        include: {
+          organization: { select: { id: true, name: true } },
+        },
+        orderBy: [{ organizationId: "asc" }, { name: "asc" }],
+        skip,
+        take,
+      }),
+      prisma.branch.count({ where }),
+    ]);
+
+    const branches = rows.map((b) => ({
+      id: b.id,
+      name: b.name,
+      address: b.address,
+      phone: b.phone,
+      isActive: b.isActive,
+      code: b.code,
+      city: b.city,
+      state: b.state,
+      pincode: b.pincode,
+      email: b.email,
+      managerName: b.managerName,
+      managerPhone: b.managerPhone,
+      organizationId: b.organizationId,
+      organizationName: b.organization.name,
+    }));
+
+    res.json({ data: { branches, total }, error: null });
+  } catch (e) {
+    next(e);
+  }
 }
 
 // ─── GET /api/platform/renewals ───────────────────────────────────────────────
@@ -51,32 +275,37 @@ export async function listPlatformRenewals(req: Request, res: Response, next: Ne
     const until = parseDateFilter(q.until);
     const paymentStatus = typeof q.paymentStatus === "string" ? q.paymentStatus : undefined;
 
-    const bills = await prisma.subscriptionBill.findMany({
-      where: {
-        ...(orgId ? { organizationId: orgId } : {}),
-        ...(since || until
-          ? { createdAt: { ...(since ? { gte: since } : {}), ...(until ? { lte: until } : {}) } }
-          : {}),
-        ...(paymentStatus ? { payment: { status: paymentStatus as never } } : {}),
-      },
-      include: {
-        organization: { select: { id: true, name: true } },
-        payment: {
-          select: {
-            id: true,
-            status: true,
-            txnReference: true,
-            amount: true,
-            method: true,
-            verifiedAt: true,
-            recordedBy: true,
+    const where: Prisma.SubscriptionBillWhereInput = {
+      ...(orgId ? { organizationId: orgId } : {}),
+      ...(since || until
+        ? { createdAt: { ...(since ? { gte: since } : {}), ...(until ? { lte: until } : {}) } }
+        : {}),
+      ...(paymentStatus ? { payment: { status: paymentStatus as never } } : {}),
+    };
+
+    const [bills, total] = await Promise.all([
+      prisma.subscriptionBill.findMany({
+        where,
+        include: {
+          organization: { select: { id: true, name: true } },
+          payment: {
+            select: {
+              id: true,
+              status: true,
+              txnReference: true,
+              amount: true,
+              method: true,
+              verifiedAt: true,
+              recordedBy: true,
+            },
           },
         },
-      },
-      orderBy: { createdAt: "desc" },
-      skip,
-      take,
-    });
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+      }),
+      prisma.subscriptionBill.count({ where }),
+    ]);
 
     const renewals = bills.map((b) => ({
       billId: b.id,
@@ -98,7 +327,7 @@ export async function listPlatformRenewals(req: Request, res: Response, next: Ne
       renewalDate: b.createdAt.toISOString(),
     }));
 
-    res.json({ data: { renewals, total: renewals.length }, error: null });
+    res.json({ data: { renewals, total }, error: null });
   } catch (e) {
     next(e);
   }
@@ -116,32 +345,37 @@ export async function listPlatformBills(req: Request, res: Response, next: NextF
     const paymentStatus = typeof q.paymentStatus === "string" ? q.paymentStatus : undefined;
     const search = typeof q.search === "string" ? q.search.trim() : undefined;
 
-    const bills = await prisma.subscriptionBill.findMany({
-      where: {
-        ...(orgId ? { organizationId: orgId } : {}),
-        ...(search
-          ? {
-              OR: [
-                { billNumber: { contains: search, mode: "insensitive" } },
-                { organization: { name: { contains: search, mode: "insensitive" } } },
-              ],
-            }
-          : {}),
-        ...(since || until
-          ? { createdAt: { ...(since ? { gte: since } : {}), ...(until ? { lte: until } : {}) } }
-          : {}),
-        ...(paymentStatus ? { payment: { status: paymentStatus as never } } : {}),
-      },
-      include: {
-        organization: { select: { id: true, name: true } },
-        payment: {
-          select: { id: true, status: true, txnReference: true, verifiedAt: true },
+    const where: Prisma.SubscriptionBillWhereInput = {
+      ...(orgId ? { organizationId: orgId } : {}),
+      ...(search
+        ? {
+            OR: [
+              { billNumber: { contains: search, mode: "insensitive" } },
+              { organization: { name: { contains: search, mode: "insensitive" } } },
+            ],
+          }
+        : {}),
+      ...(since || until
+        ? { createdAt: { ...(since ? { gte: since } : {}), ...(until ? { lte: until } : {}) } }
+        : {}),
+      ...(paymentStatus ? { payment: { status: paymentStatus as never } } : {}),
+    };
+
+    const [bills, total] = await Promise.all([
+      prisma.subscriptionBill.findMany({
+        where,
+        include: {
+          organization: { select: { id: true, name: true } },
+          payment: {
+            select: { id: true, status: true, txnReference: true, verifiedAt: true },
+          },
         },
-      },
-      orderBy: { createdAt: "desc" },
-      skip,
-      take,
-    });
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+      }),
+      prisma.subscriptionBill.count({ where }),
+    ]);
 
     const result = bills.map((b) => ({
       id: b.id,
@@ -168,7 +402,7 @@ export async function listPlatformBills(req: Request, res: Response, next: NextF
       createdAt: b.createdAt.toISOString(),
     }));
 
-    res.json({ data: { bills: result, total: result.length }, error: null });
+    res.json({ data: { bills: result, total }, error: null });
   } catch (e) {
     next(e);
   }
@@ -185,23 +419,28 @@ export async function listPlatformPayments(req: Request, res: Response, next: Ne
     const since = parseDateFilter(q.since);
     const until = parseDateFilter(q.until);
 
-    const payments = await prisma.subscriptionPayment.findMany({
-      where: {
-        ...(orgId ? { organizationId: orgId } : {}),
-        ...(status ? { status: status as never } : {}),
-        ...(since || until
-          ? { createdAt: { ...(since ? { gte: since } : {}), ...(until ? { lte: until } : {}) } }
-          : {}),
-      },
-      include: {
-        organization: { select: { id: true, name: true } },
-        subscription: { select: { planCode: true, planName: true } },
-        bill: { select: { billNumber: true, totalAmount: true } },
-      },
-      orderBy: { createdAt: "desc" },
-      skip,
-      take,
-    });
+    const where: Prisma.SubscriptionPaymentWhereInput = {
+      ...(orgId ? { organizationId: orgId } : {}),
+      ...(status ? { status: status as never } : {}),
+      ...(since || until
+        ? { createdAt: { ...(since ? { gte: since } : {}), ...(until ? { lte: until } : {}) } }
+        : {}),
+    };
+
+    const [payments, total] = await Promise.all([
+      prisma.subscriptionPayment.findMany({
+        where,
+        include: {
+          organization: { select: { id: true, name: true } },
+          subscription: { select: { planCode: true, planName: true } },
+          bill: { select: { billNumber: true, totalAmount: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+      }),
+      prisma.subscriptionPayment.count({ where }),
+    ]);
 
     const result = payments.map((p) => ({
       id: p.id,
@@ -221,7 +460,7 @@ export async function listPlatformPayments(req: Request, res: Response, next: Ne
       createdAt: p.createdAt.toISOString(),
     }));
 
-    res.json({ data: { payments: result, total: result.length }, error: null });
+    res.json({ data: { payments: result, total }, error: null });
   } catch (e) {
     next(e);
   }
@@ -238,26 +477,31 @@ export async function listPlatformAudit(req: Request, res: Response, next: NextF
     const since = parseDateFilter(q.since);
     const until = parseDateFilter(q.until);
 
-    const logs = await prisma.platformAuditLog.findMany({
-      where: {
-        ...(orgId ? { organizationId: orgId } : {}),
-        ...(action ? { action: { contains: action, mode: "insensitive" } } : {}),
-        ...(since || until
-          ? { createdAt: { ...(since ? { gte: since } : {}), ...(until ? { lte: until } : {}) } }
-          : {}),
-      },
-      include: {
-        organization: { select: { id: true, name: true } },
-      },
-      orderBy: { createdAt: "desc" },
-      skip,
-      take,
-    });
+    const where: Prisma.PlatformAuditLogWhereInput = {
+      ...(orgId ? { organizationId: orgId } : {}),
+      ...(action ? { action: { contains: action, mode: "insensitive" } } : {}),
+      ...(since || until
+        ? { createdAt: { ...(since ? { gte: since } : {}), ...(until ? { lte: until } : {}) } }
+        : {}),
+    };
+
+    const [logs, total] = await Promise.all([
+      prisma.platformAuditLog.findMany({
+        where,
+        include: {
+          organization: { select: { id: true, name: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+      }),
+      prisma.platformAuditLog.count({ where }),
+    ]);
 
     const result = logs.map((l) => ({
       id: l.id,
       organizationId: l.organizationId,
-      organizationName: l.organization.name,
+      organizationName: l.organization?.name ?? null,
       actor: l.actor,
       action: l.action,
       before: l.before,
@@ -265,7 +509,7 @@ export async function listPlatformAudit(req: Request, res: Response, next: NextF
       createdAt: l.createdAt.toISOString(),
     }));
 
-    res.json({ data: { logs: result, total: result.length }, error: null });
+    res.json({ data: { logs: result, total }, error: null });
   } catch (e) {
     next(e);
   }
@@ -283,9 +527,6 @@ export async function listPlatformReferrals(req: Request, res: Response, next: N
       orderBy: { createdAt: "desc" },
     });
 
-    // For each code, count how many bills have non-zero referralDiscount
-    // (We can't correlate exactly without storing the code on the bill,
-    //  but we provide the code list + usage hint from bills)
     const result = codes.map((c) => ({
       id: c.id,
       code: c.code,
@@ -297,7 +538,7 @@ export async function listPlatformReferrals(req: Request, res: Response, next: N
       updatedAt: c.updatedAt.toISOString(),
     }));
 
-    res.json({ data: { referralCodes: result }, error: null });
+    res.json({ data: { referralCodes: result, total: result.length }, error: null });
   } catch (e) {
     next(e);
   }
@@ -338,7 +579,315 @@ export async function createPlatformReferral(req: Request, res: Response, next: 
       },
     });
 
-    res.status(201).json({ data: created, error: null });
+    await writePlatformAuditLog({
+      actor,
+      action: "referral.created",
+      after: {
+        id: created.id,
+        code: created.code,
+        discountAmount: created.discountAmount,
+        isActive: created.isActive,
+      },
+    });
+
+    res.status(201).json({
+      data: {
+        id: created.id,
+        code: created.code,
+        discountAmount: created.discountAmount,
+        isActive: created.isActive,
+        createdBy: created.createdBy,
+        notes: created.notes,
+        createdAt: created.createdAt.toISOString(),
+        updatedAt: created.updatedAt.toISOString(),
+      },
+      error: null,
+    });
+  } catch (e) {
+    next(e);
+  }
+}
+
+const patchReferralSchema = z
+  .object({
+    discountAmount: z.number().min(0).optional(),
+    notes: z.string().max(500).nullable().optional(),
+    isActive: z.boolean().optional(),
+  })
+  .refine((b) => b.discountAmount !== undefined || b.notes !== undefined || b.isActive !== undefined, {
+    message: "At least one of discountAmount, notes, isActive is required.",
+  });
+
+// ─── PATCH /api/platform/referrals/:id ───────────────────────────────────────
+
+export async function patchPlatformReferral(req: Request, res: Response, next: NextFunction) {
+  try {
+    const id = String(req.params["id"] ?? "");
+    if (!id) throw new AppHttpError(400, "id is required.", "MISSING_PARAM");
+    const body = patchReferralSchema.parse(req.body ?? {});
+    const actor = actorFromReq(req);
+
+    const existing = await prisma.platformReferralCode.findUnique({ where: { id } });
+    if (!existing) throw new AppHttpError(404, "Referral code not found.", "NOT_FOUND");
+
+    const before = {
+      discountAmount: existing.discountAmount,
+      notes: existing.notes,
+      isActive: existing.isActive,
+    };
+
+    const updated = await prisma.platformReferralCode.update({
+      where: { id },
+      data: {
+        ...(body.discountAmount !== undefined ? { discountAmount: body.discountAmount } : {}),
+        ...(body.notes !== undefined ? { notes: body.notes } : {}),
+        ...(body.isActive !== undefined ? { isActive: body.isActive } : {}),
+      },
+    });
+
+    await writePlatformAuditLog({
+      actor,
+      action: body.isActive === false ? "referral.deactivated" : "referral.updated",
+      before,
+      after: {
+        discountAmount: updated.discountAmount,
+        notes: updated.notes,
+        isActive: updated.isActive,
+      },
+    });
+
+    res.json({
+      data: {
+        id: updated.id,
+        code: updated.code,
+        discountAmount: updated.discountAmount,
+        isActive: updated.isActive,
+        createdBy: updated.createdBy,
+        notes: updated.notes,
+        createdAt: updated.createdAt.toISOString(),
+        updatedAt: updated.updatedAt.toISOString(),
+      },
+      error: null,
+    });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// ─── GET /api/platform/plans ─────────────────────────────────────────────────
+
+export async function getPlatformPlans(req: Request, res: Response, next: NextFunction) {
+  try {
+    const settings = await getPlatformSettings();
+    const plans = getEffectivePlanCatalog(settings.planOverrides);
+    res.json({
+      data: {
+        plans,
+        overrides: settings.planOverrides,
+      },
+      error: null,
+    });
+  } catch (e) {
+    next(e);
+  }
+}
+
+const planLimitsSchema = z.object({
+  maxBranches: z.number().int().min(0).nullable().optional(),
+  maxStaff: z.number().int().min(0).nullable().optional(),
+  maxCustomers: z.number().int().min(0).nullable().optional(),
+});
+
+const putPlansSchema = z.object({
+  planOverrides: z
+    .record(
+      z.string(),
+      z.object({
+        planName: z.string().min(1).max(80).optional(),
+        limits: planLimitsSchema.optional(),
+      })
+    )
+    .optional()
+    .default({}),
+});
+
+// ─── PUT /api/platform/plans ─────────────────────────────────────────────────
+
+export async function putPlatformPlans(req: Request, res: Response, next: NextFunction) {
+  try {
+    const body = putPlansSchema.parse(req.body ?? {});
+    const actor = actorFromReq(req);
+    const before = await getPlatformSettings();
+
+    const planOverrides: PlatformSettingsPayload["planOverrides"] = {};
+    for (const [code, override] of Object.entries(body.planOverrides ?? {})) {
+      if (!PLAN_CODE_ENUM.safeParse(code).success) continue;
+      const planCode = code as PlanCode;
+      if (!PLAN_CATALOG[planCode]) continue;
+      planOverrides[planCode] = {
+        ...(override.planName ? { planName: override.planName } : {}),
+        ...(override.limits
+          ? {
+              limits: parsePlanLimits({
+                ...PLAN_CATALOG[planCode].limits,
+                ...override.limits,
+              }),
+            }
+          : {}),
+      };
+    }
+
+    const settings = await updatePlatformSettings({
+      patch: { planOverrides },
+      updatedBy: actor,
+    });
+
+    await writePlatformAuditLog({
+      actor,
+      action: "plans.updated",
+      before: { planOverrides: before.planOverrides },
+      after: { planOverrides: settings.planOverrides },
+    });
+
+    res.json({
+      data: {
+        plans: getEffectivePlanCatalog(settings.planOverrides),
+        overrides: settings.planOverrides,
+      },
+      error: null,
+    });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// ─── GET /api/platform/settings ──────────────────────────────────────────────
+
+export async function getPlatformSettingsHandler(req: Request, res: Response, next: NextFunction) {
+  try {
+    const settings = await getPlatformSettings();
+    res.json({
+      data: {
+        settings: {
+          trialDaysDefault: settings.trialDaysDefault,
+          defaultTermMonths: settings.defaultTermMonths,
+          defaultGstPercent: settings.defaultGstPercent,
+          defaultContactUsUrl: settings.defaultContactUsUrl,
+          defaultContactPhone: settings.defaultContactPhone,
+          defaultUpgradeUrl: settings.defaultUpgradeUrl,
+        },
+        meta: {
+          updatedAt: settings.updatedAt,
+          updatedBy: settings.updatedBy,
+          envFallbacks: {
+            defaultContactUsUrl: env.DEFAULT_CONTACT_US_URL ?? null,
+            defaultUpgradeUrl: env.DEFAULT_UPGRADE_URL ?? null,
+            defaultContactPhone: process.env.DEFAULT_CONTACT_PHONE?.trim() || null,
+          },
+        },
+      },
+      error: null,
+    });
+  } catch (e) {
+    next(e);
+  }
+}
+
+const putSettingsSchema = z.object({
+  trialDaysDefault: z.number().int().min(1).max(90).optional(),
+  defaultTermMonths: z.union([z.literal(12), z.literal(24), z.literal(36), z.literal(60)]).optional(),
+  defaultGstPercent: z.number().min(0).max(100).optional(),
+  defaultContactUsUrl: z.string().max(500).nullable().optional(),
+  defaultContactPhone: z.string().max(32).nullable().optional(),
+  defaultUpgradeUrl: z.string().max(500).nullable().optional(),
+});
+
+// ─── PUT /api/platform/settings ──────────────────────────────────────────────
+
+export async function putPlatformSettingsHandler(req: Request, res: Response, next: NextFunction) {
+  try {
+    const body = putSettingsSchema.parse(req.body ?? {});
+    const actor = actorFromReq(req);
+    const before = await getPlatformSettings();
+
+    // Reject accidental secret fields if a client sends them.
+    const raw = (req.body ?? {}) as Record<string, unknown>;
+    const forbiddenKeys = [
+      "twilioAuthToken",
+      "twilioApiKeySecret",
+      "resendApiKey",
+      "RESEND_API_KEY",
+      "TWILIO_AUTH_TOKEN",
+    ];
+    for (const key of forbiddenKeys) {
+      if (key in raw) {
+        throw new AppHttpError(400, "Provider secrets cannot be stored via platform settings.", "SECRETS_NOT_ALLOWED");
+      }
+    }
+
+    const settings = await updatePlatformSettings({
+      patch: body,
+      updatedBy: actor,
+    });
+
+    await writePlatformAuditLog({
+      actor,
+      action: "settings.updated",
+      before: {
+        trialDaysDefault: before.trialDaysDefault,
+        defaultTermMonths: before.defaultTermMonths,
+        defaultGstPercent: before.defaultGstPercent,
+        defaultContactUsUrl: before.defaultContactUsUrl,
+        defaultContactPhone: before.defaultContactPhone,
+        defaultUpgradeUrl: before.defaultUpgradeUrl,
+      },
+      after: {
+        trialDaysDefault: settings.trialDaysDefault,
+        defaultTermMonths: settings.defaultTermMonths,
+        defaultGstPercent: settings.defaultGstPercent,
+        defaultContactUsUrl: settings.defaultContactUsUrl,
+        defaultContactPhone: settings.defaultContactPhone,
+        defaultUpgradeUrl: settings.defaultUpgradeUrl,
+      },
+    });
+
+    res.json({
+      data: {
+        settings: {
+          trialDaysDefault: settings.trialDaysDefault,
+          defaultTermMonths: settings.defaultTermMonths,
+          defaultGstPercent: settings.defaultGstPercent,
+          defaultContactUsUrl: settings.defaultContactUsUrl,
+          defaultContactPhone: settings.defaultContactPhone,
+          defaultUpgradeUrl: settings.defaultUpgradeUrl,
+        },
+        meta: {
+          updatedAt: settings.updatedAt,
+          updatedBy: settings.updatedBy,
+        },
+      },
+      error: null,
+    });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// ─── GET /api/platform/messaging ─────────────────────────────────────────────
+
+export async function getPlatformMessagingStatus(req: Request, res: Response, next: NextFunction) {
+  try {
+    res.json({
+      data: {
+        smsEnabled: isTwilioSmsEnabled(),
+        whatsappEnabled: isTwilioWhatsAppEnabled(),
+        emailEnabled: isResendConfigured(),
+        mailFromSet: Boolean(env.MAIL_FROM?.trim()),
+        twilioFromSet: Boolean(env.TWILIO_FROM_NUMBER?.trim()),
+        twilioWhatsappFromSet: Boolean(env.TWILIO_WHATSAPP_FROM?.trim()),
+      },
+      error: null,
+    });
   } catch (e) {
     next(e);
   }

@@ -382,7 +382,7 @@ export const platformPaths: OpenApiPaths = {
           planName: { type: "string" },
           status: {
             type: "string",
-            enum: ["ACTIVE", "PAST_DUE", "EXPIRED", "CANCELLED"],
+            enum: ["ACTIVE", "PAST_DUE", "EXPIRED", "CANCELLED", "TRIAL"],
           },
           limits: {
             type: "object",
@@ -512,6 +512,88 @@ const crossOrgDateFilters = [
 ];
 
 export const platformExtPaths: OpenApiPaths = {
+  "/api/platform/dashboard": {
+    get: {
+      tags: ["SaaS Admin"],
+      summary: "Platform dashboard aggregates",
+      description:
+        "Org active/inactive counts, subscription status breakdown, MTD paid SaaS revenue, pending payments, active referrals.",
+      security: platformSecurity,
+      responses: {
+        "200": okResponse({
+          type: "object",
+          properties: {
+            organizations: {
+              type: "object",
+              properties: {
+                total: { type: "integer" },
+                active: { type: "integer" },
+                inactive: { type: "integer" },
+              },
+            },
+            subscriptionStatusBreakdown: { type: "object", additionalProperties: { type: "integer" } },
+            revenueMtd: { type: "object", additionalProperties: true },
+            pendingPayments: { type: "integer" },
+            activeReferrals: { type: "integer" },
+          },
+        }),
+        ...commonErrorResponses(),
+      },
+    },
+  },
+  "/api/platform/users": {
+    get: {
+      tags: ["SaaS Admin", "Users"],
+      summary: "List users across organizations",
+      description:
+        "Platform auth. Safe staff directory fields only (no password hashes/tokens). Excludes PLATFORM_OWNER unless includePlatformOwner=true. total is the full filtered count.",
+      security: platformSecurity,
+      parameters: [
+        ...crossOrgPageParams,
+        { name: "orgId", in: "query", schema: { type: "string" } },
+        { name: "role", in: "query", schema: { type: "string" } },
+        { name: "isActive", in: "query", schema: { type: "boolean" } },
+        { name: "search", in: "query", schema: { type: "string" }, description: "Match name, email, or phone" },
+        { name: "includePlatformOwner", in: "query", schema: { type: "boolean", default: false } },
+      ],
+      responses: {
+        "200": okResponse({
+          type: "object",
+          required: ["users", "total"],
+          properties: {
+            users: { type: "array", items: { type: "object", additionalProperties: true } },
+            total: { type: "integer" },
+          },
+        }),
+        ...commonErrorResponses(),
+      },
+    },
+  },
+  "/api/platform/branches": {
+    get: {
+      tags: ["SaaS Admin", "Branches"],
+      summary: "List branches across organizations",
+      description: "Platform auth. Returns actual branch records (not just counts). total is the full filtered count.",
+      security: platformSecurity,
+      parameters: [
+        ...crossOrgPageParams,
+        { name: "orgId", in: "query", schema: { type: "string" } },
+        { name: "isActive", in: "query", schema: { type: "boolean" } },
+        { name: "search", in: "query", schema: { type: "string" } },
+      ],
+      responses: {
+        "200": okResponse({
+          type: "object",
+          required: ["branches", "total"],
+          properties: {
+            branches: { type: "array", items: { type: "object", additionalProperties: true } },
+            total: { type: "integer" },
+          },
+        }),
+        ...commonErrorResponses(),
+      },
+    },
+  },
   "/api/platform/renewals": {
     get: {
       tags: ["SaaS Admin"],
@@ -524,7 +606,7 @@ export const platformExtPaths: OpenApiPaths = {
         { name: "paymentStatus", in: "query", schema: { type: "string", enum: ["PAID","PENDING","PROCESSING","FAILED"] } },
       ],
       responses: {
-        "200": okResponse({ type: "object", required: ["renewals"], properties: { renewals: { type: "array", items: { type: "object", additionalProperties: true } }, total: { type: "integer" } } }),
+        "200": okResponse({ type: "object", required: ["renewals", "total"], properties: { renewals: { type: "array", items: { type: "object", additionalProperties: true } }, total: { type: "integer", description: "Full filtered count (not page length)" } } }),
         ...commonErrorResponses(),
       },
     },
@@ -542,7 +624,7 @@ export const platformExtPaths: OpenApiPaths = {
         { name: "paymentStatus", in: "query", schema: { type: "string", enum: ["PAID","PENDING","PROCESSING","FAILED"] } },
       ],
       responses: {
-        "200": okResponse({ type: "object", required: ["bills"], properties: { bills: { type: "array", items: { type: "object", additionalProperties: true } }, total: { type: "integer" } } }),
+        "200": okResponse({ type: "object", required: ["bills", "total"], properties: { bills: { type: "array", items: { type: "object", additionalProperties: true } }, total: { type: "integer", description: "Full filtered count (not page length)" } } }),
         ...commonErrorResponses(),
       },
     },
@@ -559,7 +641,7 @@ export const platformExtPaths: OpenApiPaths = {
         { name: "status", in: "query", schema: { type: "string", enum: ["PAID","PENDING","PROCESSING","FAILED"] } },
       ],
       responses: {
-        "200": okResponse({ type: "object", required: ["payments"], properties: { payments: { type: "array", items: { type: "object", additionalProperties: true } }, total: { type: "integer" } } }),
+        "200": okResponse({ type: "object", required: ["payments", "total"], properties: { payments: { type: "array", items: { type: "object", additionalProperties: true } }, total: { type: "integer", description: "Full filtered count (not page length)" } } }),
         ...commonErrorResponses(),
       },
     },
@@ -576,7 +658,7 @@ export const platformExtPaths: OpenApiPaths = {
         { name: "action", in: "query", schema: { type: "string" }, description: "Partial match on action name." },
       ],
       responses: {
-        "200": okResponse({ type: "object", required: ["logs"], properties: { logs: { type: "array", items: { type: "object", additionalProperties: true } }, total: { type: "integer" } } }),
+        "200": okResponse({ type: "object", required: ["logs", "total"], properties: { logs: { type: "array", items: { type: "object", additionalProperties: true } }, total: { type: "integer", description: "Full filtered count (not page length)" } } }),
         ...commonErrorResponses(),
       },
     },
@@ -590,7 +672,7 @@ export const platformExtPaths: OpenApiPaths = {
         { name: "showInactive", in: "query", schema: { type: "boolean" } },
       ],
       responses: {
-        "200": okResponse({ type: "object", required: ["referralCodes"], properties: { referralCodes: { type: "array", items: { type: "object", additionalProperties: true } } } }),
+        "200": okResponse({ type: "object", required: ["referralCodes"], properties: { referralCodes: { type: "array", items: { type: "object", additionalProperties: true } }, total: { type: "integer" } } }),
         ...commonErrorResponses(),
       },
     },
@@ -601,6 +683,144 @@ export const platformExtPaths: OpenApiPaths = {
       requestBody: jsonBody({ type: "object", required: ["code"], properties: { code: { type: "string", minLength: 4, maxLength: 24, pattern: "^[A-Z0-9-]+$" }, discountAmount: { type: "number", minimum: 0, default: 1000 }, notes: { type: "string" } } }),
       responses: {
         "201": okResponse({ type: "object", additionalProperties: true }),
+        ...commonErrorResponses(),
+      },
+    },
+  },
+  "/api/platform/referrals/{id}": {
+    patch: {
+      tags: ["SaaS Admin"],
+      summary: "Update or deactivate a referral code",
+      description: "Patch discountAmount, notes, and/or isActive (set false to deactivate).",
+      security: platformSecurity,
+      parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+      requestBody: jsonBody(
+        {
+          type: "object",
+          properties: {
+            discountAmount: { type: "number", minimum: 0 },
+            notes: { type: "string", nullable: true, maxLength: 500 },
+            isActive: { type: "boolean" },
+          },
+        },
+        false
+      ),
+      responses: {
+        "200": okResponse({ type: "object", additionalProperties: true }),
+        ...commonErrorResponses(),
+      },
+    },
+  },
+  "/api/platform/plans": {
+    get: {
+      tags: ["SaaS Admin", "Plans"],
+      summary: "List effective plan catalog",
+      description: "PLAN_CATALOG merged with PlatformSettings.planOverrides.",
+      security: platformSecurity,
+      responses: {
+        "200": okResponse({
+          type: "object",
+          properties: {
+            plans: { type: "array", items: { type: "object", additionalProperties: true } },
+            overrides: { type: "object", additionalProperties: true },
+          },
+        }),
+        ...commonErrorResponses(),
+      },
+    },
+    put: {
+      tags: ["SaaS Admin", "Plans"],
+      summary: "Update plan catalog overrides",
+      description: "Partial overrides per planCode (name/limits). Does not remove enum plans. Secrets not accepted.",
+      security: platformSecurity,
+      requestBody: jsonBody({
+        type: "object",
+        properties: {
+          planOverrides: {
+            type: "object",
+            additionalProperties: {
+              type: "object",
+              properties: {
+                planName: { type: "string" },
+                limits: {
+                  type: "object",
+                  properties: {
+                    maxBranches: { type: "integer", nullable: true },
+                    maxStaff: { type: "integer", nullable: true },
+                    maxCustomers: { type: "integer", nullable: true },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+      responses: {
+        "200": okResponse({
+          type: "object",
+          properties: {
+            plans: { type: "array", items: { type: "object", additionalProperties: true } },
+            overrides: { type: "object", additionalProperties: true },
+          },
+        }),
+        ...commonErrorResponses(),
+      },
+    },
+  },
+  "/api/platform/settings": {
+    get: {
+      tags: ["SaaS Admin", "Settings"],
+      summary: "Get platform settings",
+      description: "Trial/billing defaults merged with env fallbacks. Never returns provider secrets.",
+      security: platformSecurity,
+      responses: {
+        "200": okResponse({ type: "object", additionalProperties: true }),
+        ...commonErrorResponses(),
+      },
+    },
+    put: {
+      tags: ["SaaS Admin", "Settings"],
+      summary: "Update platform settings",
+      description: "Upserts PlatformSettings singleton. Rejects Twilio/Resend secret fields.",
+      security: platformSecurity,
+      requestBody: jsonBody(
+        {
+          type: "object",
+          properties: {
+            trialDaysDefault: { type: "integer", minimum: 1, maximum: 90 },
+            defaultTermMonths: { type: "integer", enum: [12, 24, 36, 60] },
+            defaultGstPercent: { type: "number", minimum: 0, maximum: 100 },
+            defaultContactUsUrl: { type: "string", nullable: true },
+            defaultContactPhone: { type: "string", nullable: true },
+            defaultUpgradeUrl: { type: "string", nullable: true },
+          },
+        },
+        false
+      ),
+      responses: {
+        "200": okResponse({ type: "object", additionalProperties: true }),
+        ...commonErrorResponses(),
+      },
+    },
+  },
+  "/api/platform/messaging": {
+    get: {
+      tags: ["SaaS Admin", "Messaging"],
+      summary: "Platform messaging provider status",
+      description: "Read-only capability flags from env (no secrets returned).",
+      security: platformSecurity,
+      responses: {
+        "200": okResponse({
+          type: "object",
+          properties: {
+            smsEnabled: { type: "boolean" },
+            whatsappEnabled: { type: "boolean" },
+            emailEnabled: { type: "boolean" },
+            mailFromSet: { type: "boolean" },
+            twilioFromSet: { type: "boolean" },
+            twilioWhatsappFromSet: { type: "boolean" },
+          },
+        }),
         ...commonErrorResponses(),
       },
     },

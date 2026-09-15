@@ -72,7 +72,8 @@ describe("buildPublicCustomerStatement", () => {
     assert.match(sales[0]!.date, /01/);
     assert.equal(sales[0]!.balance, 75000);
 
-    assert.equal(sales[1]!.voucher, "Payment In");
+    assert.equal(sales[1]!.voucher.startsWith("Payment In"), true);
+    assert.equal(sales[1]!.serialNo, "INV-2026-0025");
     assert.equal(sales[1]!.credit, 75000);
     assert.equal(sales[1]!.debit, undefined);
     assert.match(sales[1]!.date, /07/);
@@ -117,10 +118,12 @@ describe("buildPublicCustomerStatement", () => {
     assert.equal(invRow?.credit, undefined);
     assert.equal(invRow?.dueLabel, "Paid");
 
-    const credits = sales.filter((l) => l.voucher === "Payment In");
+    const credits = sales.filter((l) => l.voucher.startsWith("Payment In"));
     assert.equal(credits.length, 2);
     assert.equal(credits[0]!.credit, 1000);
     assert.equal(credits[1]!.credit, 710);
+    assert.equal(credits[0]!.serialNo, "INV-2026-0341");
+    assert.equal(credits[1]!.serialNo, "INV-2026-0341");
     assert.equal(sales.at(-1)!.balance, 0);
   });
 
@@ -142,7 +145,7 @@ describe("buildPublicCustomerStatement", () => {
       }),
     ];
     const lines = buildPublicCustomerStatement(party(), invoices, "all");
-    assert.equal(lines.some((l) => l.voucher === "Payment In"), true);
+    assert.equal(lines.some((l) => l.voucher.startsWith("Payment In")), true);
     assert.equal(lines.filter((l) => !l.isSummary).length, 2);
   });
 
@@ -164,8 +167,9 @@ describe("buildPublicCustomerStatement", () => {
       }),
     ];
     const lines = buildPublicCustomerStatement(party(), invoices, "all");
-    const pay = lines.find((l) => l.voucher === "Payment In");
+    const pay = lines.find((l) => l.voucher.startsWith("Payment In"));
     const inv = lines.find((l) => l.voucher === "Sales Invoice");
     assert.equal(pay?.date, inv?.date);
+    assert.equal(pay?.serialNo, inv?.serialNo);
   });
 });

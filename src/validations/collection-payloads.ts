@@ -205,6 +205,7 @@ export const customerRewardSettingsPayloadSchema = z
     pointValue: z.number().optional(),
     referralBonus: z.number().optional(),
     minRedeem: z.number().optional(),
+    maxRedeem: z.number().optional(),
     updatedAt: z.string().optional(),
   })
   .passthrough();
