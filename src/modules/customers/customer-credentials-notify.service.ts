@@ -5,7 +5,7 @@
  * create/update flow) must never fail because a WhatsApp send failed.
  */
 import { prisma } from "../../lib/prisma.js";
-import { SINGLETON_ENTITY_ID } from "../../constants/json-collections.js";
+import { SINGLETON_ENTITY_ID, singletonStorageEntityId } from "../../constants/json-collections.js";
 import { env } from "../../config/env.js";
 import { isTwilioWhatsAppEnabled, sendWhatsAppMessage } from "../../services/twilio-sms.service.js";
 import { buildCustomerCredentialsWhatsAppMessage } from "../../lib/customer-credentials-whatsapp.js";
@@ -13,7 +13,15 @@ import { upsertCollectionItem } from "../collections/app-json-store.js";
 
 async function resolveBusinessName(organizationId: string): Promise<string> {
   const row = await prisma.appJsonRow.findFirst({
-    where: { collection: "appSettings", entityId: SINGLETON_ENTITY_ID, organizationId },
+    where: {
+      collection: "appSettings",
+      organizationId,
+      OR: [
+        { entityId: singletonStorageEntityId(organizationId) },
+        { entityId: SINGLETON_ENTITY_ID },
+      ],
+    },
+    orderBy: { updatedAt: "desc" },
     select: { payload: true },
   });
   const payload = row?.payload as Record<string, unknown> | undefined;

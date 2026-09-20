@@ -7,6 +7,9 @@ import {
   getResolvedSubscriptionPricing,
 } from "../lib/platform-settings.js";
 import { isAllowedTerm } from "../lib/plan-catalog.js";
+import { AppHttpError } from "../lib/app-http-error.js";
+import { strongPasswordSchema } from "../lib/password-policy.js";
+import { provisionOrganization } from "../modules/organization/organization-provision.service.js";
 
 type LimiterState = { count: number; resetAt: number };
 
@@ -55,19 +58,40 @@ async function resolveLeadOrganizationId(): Promise<string | null> {
   return first?.id ?? null;
 }
 
-const signupSchema = z.object({
-  name: z.string().min(1).max(120),
-  email: z.string().email(),
-  phone: z.string().min(7).max(20),
-  companyName: z.string().min(1).max(160),
-  message: z.string().max(2000).optional(),
-  source: z.string().max(80).optional(),
-});
+/** Self-serve trial signup — provisions org + owner + HQ + TRIAL. */
+const signupSchema = z
+  .object({
+    // Website fields
+    businessName: z.string().min(1).max(160).optional(),
+    ownerName: z.string().min(1).max(120).optional(),
+    // Legacy lead-capture aliases
+    companyName: z.string().min(1).max(160).optional(),
+    name: z.string().min(1).max(120).optional(),
+    email: z.string().email(),
+    phone: z.string().min(7).max(20),
+    password: strongPasswordSchema,
+    branchName: z.string().min(1).max(120).optional(),
+    planCode: z.string().min(2).max(24).optional(),
+    referralCode: z.string().max(32).nullable().optional(),
+    message: z.string().max(2000).optional(),
+    source: z.string().max(80).optional(),
+  })
+  .superRefine((val, ctx) => {
+    const business = (val.businessName ?? val.companyName ?? "").trim();
+    const owner = (val.ownerName ?? val.name ?? "").trim();
+    if (!business) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Business name is required.", path: ["businessName"] });
+    }
+    if (!owner) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Owner name is required.", path: ["ownerName"] });
+    }
+  });
 
 const contactSchema = z.object({
   name: z.string().min(1).max(120),
   email: z.string().email().optional(),
   phone: z.string().min(7).max(20).optional(),
+  businessName: z.string().max(160).optional(),
   subject: z.string().max(200).optional(),
   message: z.string().min(1).max(2000),
   source: z.string().max(80).optional(),
@@ -84,7 +108,7 @@ const publicPricingSchema = z.object({
 
 export async function postPublicSignup(req: Request, res: Response, next: NextFunction) {
   try {
-    if (!enforceRateLimit(req, "public-signup", 10, 10 * 60_000)) {
+    if (!enforceRateLimit(req, "public-signup", 5, 10 * 60_000)) {
       res.status(429).json({
         data: null,
         error: { message: "Too many signup requests. Please try again in a few minutes." },
@@ -93,35 +117,70 @@ export async function postPublicSignup(req: Request, res: Response, next: NextFu
     }
 
     const body = signupSchema.parse(req.body ?? {});
-    const organizationId = await resolveLeadOrganizationId();
-    if (!organizationId) {
-      res.status(503).json({
+    const businessName = (body.businessName ?? body.companyName ?? "").trim();
+    const ownerName = (body.ownerName ?? body.name ?? "").trim();
+
+    const provisioned = await provisionOrganization({
+      businessName,
+      ownerName,
+      email: body.email,
+      phone: body.phone,
+      password: body.password,
+      branchName: body.branchName,
+      planCode: body.planCode,
+      referralCode: body.referralCode ?? null,
+      source: body.source ?? "public_website",
+      actor: `public:${getClientIp(req)}`,
+    });
+
+    // Best-effort CRM lead row (does not block signup if lead org is missing).
+    try {
+      const leadOrgId = await resolveLeadOrganizationId();
+      if (leadOrgId) {
+        const id = `signup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        await prisma.appJsonRow.create({
+          data: {
+            collection: "publicSignups",
+            entityId: id,
+            organizationId: leadOrgId,
+            payload: {
+              id,
+              organizationId: provisioned.organizationId,
+              businessName,
+              ownerName,
+              email: body.email.trim().toLowerCase(),
+              phone: body.phone.trim(),
+              message: body.message,
+              source: body.source ?? "public_website",
+              createdAt: new Date().toISOString(),
+              ip: getClientIp(req),
+              userAgent: req.headers["user-agent"] ?? null,
+            },
+          },
+        });
+      }
+    } catch {
+      /* non-fatal */
+    }
+
+    res.status(201).json({
+      data: {
+        accessToken: provisioned.accessToken,
+        user: provisioned.user,
+        organizationId: provisioned.organizationId,
+        branch: provisioned.branch,
+        subscription: provisioned.subscription,
+      },
+      error: null,
+    });
+  } catch (e) {
+    if (e instanceof AppHttpError) {
+      res.status(e.status).json({
         data: null,
-        error: { message: "Service is temporarily unavailable." },
+        error: { message: e.message, code: e.code },
       });
       return;
     }
-
-    const id = `signup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    await prisma.appJsonRow.create({
-      data: {
-        collection: "publicSignups",
-        entityId: id,
-        organizationId,
-        payload: {
-          id,
-          ...body,
-          email: body.email.trim().toLowerCase(),
-          phone: body.phone.trim(),
-          createdAt: new Date().toISOString(),
-          ip: getClientIp(req),
-          userAgent: req.headers["user-agent"] ?? null,
-        },
-      },
-    });
-
-    res.status(201).json({ data: { ok: true, id }, error: null });
-  } catch (e) {
     next(e);
   }
 }
@@ -164,7 +223,14 @@ export async function postPublicContact(req: Request, res: Response, next: NextF
       },
     });
 
-    res.status(201).json({ data: { ok: true, id }, error: null });
+    res.status(201).json({
+      data: {
+        ok: true,
+        id,
+        message: "Thanks for reaching out. Our team will follow up shortly.",
+      },
+      error: null,
+    });
   } catch (e) {
     next(e);
   }

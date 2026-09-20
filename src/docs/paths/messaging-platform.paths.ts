@@ -348,6 +348,36 @@ export const platformPaths: OpenApiPaths = {
       },
     },
   },
+  "/api/platform/organizations/provision": {
+    post: {
+      tags: ["SaaS Admin"],
+      summary: "Provision a new organization (trial)",
+      description:
+        "PLATFORM_OWNER only. Creates Organization + HQ branch + SUPER_ADMIN + TRIAL subscription. " +
+        "Same provisioning path as public signup.",
+      security: platformSecurity,
+      requestBody: jsonBody({
+        type: "object",
+        required: ["businessName", "ownerName", "email", "phone", "password"],
+        properties: {
+          businessName: { type: "string" },
+          ownerName: { type: "string" },
+          email: { type: "string", format: "email" },
+          phone: { type: "string" },
+          password: { type: "string", format: "password" },
+          branchName: { type: "string" },
+          planCode: { type: "string" },
+          referralCode: { type: "string", nullable: true },
+          trialDays: { type: "integer", minimum: 1, maximum: 90 },
+          source: { type: "string" },
+        },
+      }),
+      responses: {
+        "201": okResponse({ type: "object", additionalProperties: true }),
+        ...commonErrorResponses(),
+      },
+    },
+  },
   "/api/platform/organizations/{orgId}": {
     get: {
       tags: ["SaaS Admin"],
@@ -594,6 +624,26 @@ export const platformExtPaths: OpenApiPaths = {
       },
     },
   },
+  "/api/platform/organizations/{orgId}/activity": {
+    get: {
+      tags: ["SaaS Admin"],
+      summary: "Organization workshop activity logs",
+      description:
+        "PLATFORM_OWNER only. Reads the existing workshop activityLogs collection for one organization. " +
+        "This is separate from platform audit (GET /api/platform/audit).",
+      security: platformSecurity,
+      parameters: [
+        { name: "orgId", in: "path", required: true, schema: { type: "string" } },
+        { name: "page", in: "query", schema: { type: "integer" } },
+        { name: "pageSize", in: "query", schema: { type: "integer" } },
+        { name: "q", in: "query", schema: { type: "string" } },
+      ],
+      responses: {
+        "200": okResponse({ type: "object", additionalProperties: true }),
+        ...commonErrorResponses(),
+      },
+    },
+  },
   "/api/platform/renewals": {
     get: {
       tags: ["SaaS Admin"],
@@ -833,6 +883,32 @@ export const platformExtPaths: OpenApiPaths = {
             twilioWhatsappFromSet: { type: "boolean" },
           },
         }),
+        ...commonErrorResponses(),
+      },
+    },
+  },
+  "/api/platform/organizations/{orgId}/subscription/convert-trial": {
+    post: {
+      tags: ["SaaS Admin"],
+      summary: "Convert trial subscription to paid term",
+      description:
+        "PLATFORM_OWNER only. Moves TRIAL → ACTIVE. Set markPaid=true for manual activation without a payment gateway. " +
+        "Does not invent gateway charges.",
+      security: platformSecurity,
+      parameters: [
+        { name: "orgId", in: "path", required: true, schema: { type: "string" } },
+      ],
+      requestBody: jsonBody({
+        type: "object",
+        properties: {
+          termMonths: { type: "integer", enum: [1, 3, 12, 24, 36, 60] },
+          planCode: { type: "string" },
+          markPaid: { type: "boolean" },
+          notes: { type: "string" },
+        },
+      }),
+      responses: {
+        "200": okResponse({ type: "object", additionalProperties: true }),
         ...commonErrorResponses(),
       },
     },

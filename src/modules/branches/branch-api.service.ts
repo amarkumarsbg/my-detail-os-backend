@@ -1,5 +1,5 @@
 import type { Branch } from "@prisma/client";
-import { SINGLETON_ENTITY_ID } from "../../constants/json-collections.js";
+import { SINGLETON_ENTITY_ID, singletonStorageEntityId } from "../../constants/json-collections.js";
 import { AppError } from "../../lib/app-error.js";
 import { prisma } from "../../lib/prisma.js";
 import { assertCanCreateBranch } from "../organization/organization-subscription.service.js";
@@ -62,10 +62,28 @@ async function countPayrollBranchRefs(branchId: string): Promise<{
   salaryAdvances: number;
   salaryAdvanceRecoveries: number;
 }> {
-  const row = await prisma.appJsonRow.findUnique({
-    where: { collection_entityId: { collection: "payroll", entityId: SINGLETON_ENTITY_ID } },
-    select: { payload: true },
+  const branch = await prisma.branch.findUnique({
+    where: { id: branchId },
+    select: { organizationId: true },
   });
+  const orgId = branch?.organizationId;
+  const row = orgId
+    ? await prisma.appJsonRow.findFirst({
+        where: {
+          collection: "payroll",
+          organizationId: orgId,
+          OR: [
+            { entityId: singletonStorageEntityId(orgId) },
+            { entityId: SINGLETON_ENTITY_ID },
+          ],
+        },
+        orderBy: { updatedAt: "desc" },
+        select: { payload: true },
+      })
+    : await prisma.appJsonRow.findUnique({
+        where: { collection_entityId: { collection: "payroll", entityId: SINGLETON_ENTITY_ID } },
+        select: { payload: true },
+      });
   if (!row) {
     return {
       payrollRecords: 0,

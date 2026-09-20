@@ -123,7 +123,7 @@ export type StudioPricingQuote = {
   breakdown: SubscriptionPricingBreakdown;
 };
 
-function asLimitsJson(limits: PlanLimits): Prisma.InputJsonValue {
+export function asLimitsJson(limits: PlanLimits): Prisma.InputJsonValue {
   return limits as unknown as Prisma.InputJsonValue;
 }
 

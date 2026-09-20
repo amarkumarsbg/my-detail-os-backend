@@ -9,6 +9,7 @@ import {
   isArrayCollection,
   isSingletonCollection,
   SINGLETON_ENTITY_ID,
+  singletonStorageEntityId,
 } from "../../constants/json-collections.js";
 import { applyCollectionBranchScope } from "../../lib/data-scope.js";
 import { AppError } from "../../lib/app-error.js";
@@ -83,14 +84,41 @@ export async function listCollectionItems(
   let items: unknown[];
 
   if (isSingletonCollection(collection)) {
-    const row = await prisma.appJsonRow.findFirst({
-      where: {
-        collection,
-        entityId: SINGLETON_ENTITY_ID,
-        ...(opts.organizationId ? { organizationId: opts.organizationId } : {}),
-      },
-      select: { payload: true },
-    });
+    const orgId = opts.organizationId;
+    const row = orgId
+      ? await prisma.appJsonRow.findFirst({
+          where: {
+            collection,
+            organizationId: orgId,
+            OR: [
+              { entityId: singletonStorageEntityId(orgId) },
+              { entityId: SINGLETON_ENTITY_ID },
+            ],
+          },
+          // Prefer org-scoped id when both legacy + scoped exist
+          orderBy: { updatedAt: "desc" },
+          select: { payload: true, entityId: true },
+        }).then(async (found) => {
+          if (!found) return null;
+          // If we got legacy but scoped exists, prefer scoped
+          if (found.entityId === SINGLETON_ENTITY_ID) {
+            const scoped = await prisma.appJsonRow.findUnique({
+              where: {
+                collection_entityId: {
+                  collection,
+                  entityId: singletonStorageEntityId(orgId),
+                },
+              },
+              select: { payload: true },
+            });
+            return scoped ?? found;
+          }
+          return found;
+        })
+      : await prisma.appJsonRow.findFirst({
+          where: { collection, entityId: SINGLETON_ENTITY_ID },
+          select: { payload: true },
+        });
     items = row ? [row.payload] : [];
   } else {
     const where = {
@@ -188,6 +216,29 @@ export async function getCollectionItem(
   entityId: string,
   organizationId?: string
 ): Promise<unknown | null> {
+  // Singleton logical id "default" is stored per-org as `{orgId}::default`.
+  if (
+    isSingletonCollection(collection) &&
+    entityId === SINGLETON_ENTITY_ID &&
+    organizationId
+  ) {
+    const scopedId = singletonStorageEntityId(organizationId);
+    const scoped = await prisma.appJsonRow.findUnique({
+      where: { collection_entityId: { collection, entityId: scopedId } },
+    });
+    if (scoped && scoped.organizationId === organizationId) {
+      return scoped.payload;
+    }
+    // Legacy rows created before multi-tenant singleton scoping
+    const legacy = await prisma.appJsonRow.findUnique({
+      where: { collection_entityId: { collection, entityId: SINGLETON_ENTITY_ID } },
+    });
+    if (legacy && legacy.organizationId === organizationId) {
+      return legacy.payload;
+    }
+    return null;
+  }
+
   const row = await prisma.appJsonRow.findUnique({
     where: { collection_entityId: { collection, entityId } },
   });
@@ -205,12 +256,35 @@ export async function upsertCollectionItem(
 ): Promise<void> {
   assertCollectionWriteAllowed(collection);
 
+  // Singletons: always persist under org-scoped entityId so tenants do not collide on "default".
+  const storageEntityId =
+    isSingletonCollection(collection) && entityId === SINGLETON_ENTITY_ID
+      ? singletonStorageEntityId(organizationId)
+      : entityId;
+
   const existing = await prisma.appJsonRow.findUnique({
-    where: { collection_entityId: { collection, entityId } },
+    where: { collection_entityId: { collection, entityId: storageEntityId } },
     select: { organizationId: true, payload: true },
   });
   if (existing && existing.organizationId !== organizationId) {
     throw AppError.conflict("Document id already exists in another organization");
+  }
+
+  // If a legacy shared "default" row belongs to this org, migrate it on first scoped write.
+  if (
+    isSingletonCollection(collection) &&
+    entityId === SINGLETON_ENTITY_ID &&
+    !existing
+  ) {
+    const legacy = await prisma.appJsonRow.findUnique({
+      where: { collection_entityId: { collection, entityId: SINGLETON_ENTITY_ID } },
+      select: { organizationId: true },
+    });
+    if (legacy && legacy.organizationId === organizationId) {
+      await prisma.appJsonRow.delete({
+        where: { collection_entityId: { collection, entityId: SINGLETON_ENTITY_ID } },
+      });
+    }
   }
 
   // Auto-inject user tracking
@@ -236,10 +310,10 @@ export async function upsertCollectionItem(
   }
 
   await prisma.appJsonRow.upsert({
-    where: { collection_entityId: { collection, entityId } },
+    where: { collection_entityId: { collection, entityId: storageEntityId } },
     create: {
       collection,
-      entityId,
+      entityId: storageEntityId,
       organizationId,
       payload: pObj as import("@prisma/client").Prisma.InputJsonObject,
       ...(createdAt ? { createdAt } : {}),
@@ -253,7 +327,7 @@ export async function upsertCollectionItem(
     await logBusinessActivity(ctx, {
       action: existing ? `UPDATE_${collection.toUpperCase()}` : `CREATE_${collection.toUpperCase()}`,
       entityType: collection,
-      entityId,
+      entityId: isSingletonCollection(collection) ? SINGLETON_ENTITY_ID : entityId,
     });
   }
 }

@@ -48,11 +48,24 @@ app.use(
   cors({
     origin: (origin, cb) => {
       if (!origin) return cb(null, true); // same-origin / curl
-      const allowed = (env.FRONTEND_ORIGIN ?? "http://localhost:3000")
+      const defaults = [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://localhost:3003",
+      ];
+      const allowed = (env.FRONTEND_ORIGIN ?? defaults.join(","))
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
-      cb(null, allowed.includes(origin) ? origin : false);
+      // In local/dev, also allow common Next.js ports if origin is localhost.
+      const isLocalhost =
+        /^http:\/\/localhost:\d+$/.test(origin) ||
+        /^http:\/\/127\.0\.0\.1:\d+$/.test(origin);
+      const ok =
+        allowed.includes(origin) ||
+        (process.env.NODE_ENV !== "production" && isLocalhost);
+      cb(null, ok ? origin : false);
     },
     credentials: true,
   })

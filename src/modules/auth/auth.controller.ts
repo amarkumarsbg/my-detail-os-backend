@@ -315,7 +315,11 @@ export async function forgotPassword(req: Request, res: Response, next: NextFunc
     if (user) {
       const plainToken = createPasswordResetPlainToken();
       await issuePasswordResetForUser(user.id, plainToken);
-      const base = env.FRONTEND_ORIGIN.replace(/\/+$/, "");
+      const firstOrigin = (env.FRONTEND_ORIGIN ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)[0] ?? "http://localhost:3000";
+      const base = firstOrigin.replace(/\/+$/, "");
       const resetUrl = `${base}/reset-password?token=${encodeURIComponent(plainToken)}`;
 
       if (mailOk) {
