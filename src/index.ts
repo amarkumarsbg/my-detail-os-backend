@@ -52,7 +52,17 @@ app.use(
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
-      cb(null, allowed.includes(origin) ? origin : false);
+      // Vercel preview URLs change per deploy — allow known project patterns.
+      const isAllowedVercelPreview =
+        /^https:\/\/prime-detailers-website(?:-[a-z0-9]+)?(?:-amarkumarsbgs-projects)?\.vercel\.app$/.test(
+          origin
+        ) ||
+        /^https:\/\/prime-detailer-fs-demo(?:-[a-z0-9]+)?(?:-amarkumarsbgs-projects)?\.vercel\.app$/.test(
+          origin
+        ) ||
+        /^https:\/\/[a-z0-9-]+-amarkumarsbgs-projects\.vercel\.app$/.test(origin);
+      const ok = allowed.includes(origin) || isAllowedVercelPreview;
+      cb(null, ok ? origin : false);
     },
     credentials: true,
   })
