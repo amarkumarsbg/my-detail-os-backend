@@ -58,12 +58,21 @@ app.use(
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
-      // In local/dev, also allow common Next.js ports if origin is localhost.
       const isLocalhost =
         /^http:\/\/localhost:\d+$/.test(origin) ||
         /^http:\/\/127\.0\.0\.1:\d+$/.test(origin);
+      // Vercel preview URLs change per deploy — allow known project patterns.
+      const isAllowedVercelPreview =
+        /^https:\/\/prime-detailers-website(?:-[a-z0-9]+)?(?:-amarkumarsbgs-projects)?\.vercel\.app$/.test(
+          origin
+        ) ||
+        /^https:\/\/prime-detailer-fs-demo(?:-[a-z0-9]+)?(?:-amarkumarsbgs-projects)?\.vercel\.app$/.test(
+          origin
+        ) ||
+        /^https:\/\/[a-z0-9-]+-amarkumarsbgs-projects\.vercel\.app$/.test(origin);
       const ok =
         allowed.includes(origin) ||
+        isAllowedVercelPreview ||
         (process.env.NODE_ENV !== "production" && isLocalhost);
       cb(null, ok ? origin : false);
     },
