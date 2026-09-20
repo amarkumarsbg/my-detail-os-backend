@@ -15,6 +15,7 @@ import {
   listPlatformBills,
   listPlatformPayments,
   listPlatformAudit,
+  listPlatformOrganizationActivity,
   listPlatformReferrals,
   createPlatformReferral,
   patchPlatformReferral,
@@ -49,6 +50,7 @@ platformRouter.post("/organizations/:orgId/subscription/mark-paid", postPlatform
 // Suspend / restore
 platformRouter.post("/organizations/:orgId/suspend", suspendOrganization);
 platformRouter.post("/organizations/:orgId/restore", restoreOrganization);
+platformRouter.get("/organizations/:orgId/activity", listPlatformOrganizationActivity);
 
 // Cross-org data endpoints
 platformRouter.get("/renewals", listPlatformRenewals);

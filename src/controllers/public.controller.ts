@@ -6,6 +6,7 @@ import {
   getEffectivePlanCatalogFromDb,
   getResolvedSubscriptionPricing,
 } from "../lib/platform-settings.js";
+import { isAllowedTerm } from "../lib/plan-catalog.js";
 
 type LimiterState = { count: number; resetAt: number };
 
@@ -74,7 +75,7 @@ const contactSchema = z.object({
 
 const publicPricingSchema = z.object({
   planCode: z.string().min(2).max(24).transform((s) => s.trim().toUpperCase().replace(/[\s-]+/g, "_")).default("STARTER"),
-  termMonths: z.union([z.literal(12), z.literal(24), z.literal(36), z.literal(60)]),
+  termMonths: z.union([z.literal(1), z.literal(3), z.literal(12), z.literal(24), z.literal(36), z.literal(60)]),
   extraBranches: z.number().int().nonnegative().default(0),
   extraUsers: z.number().int().nonnegative().default(0),
   referralCode: z.string().max(32).nullable().optional(),
@@ -192,6 +193,16 @@ export async function postPublicPricingQuote(req: Request, res: Response, next: 
       });
       return;
     }
+    if (!isAllowedTerm(body.termMonths, plan.allowedTerms)) {
+      res.status(400).json({
+        data: null,
+        error: {
+          message: `Term ${body.termMonths} months is not available for this plan.`,
+          code: "TERM_NOT_ALLOWED",
+        },
+      });
+      return;
+    }
     const breakdown = calculateSubscriptionPricing({
       planCode: plan.planCode,
       planName: plan.planName,
@@ -227,6 +238,7 @@ export async function getPublicPlans(_req: Request, res: Response, next: NextFun
           planCode: p.planCode,
           planName: p.planName,
           limits: p.limits,
+          allowedTerms: p.allowedTerms,
           annualPrice: Math.round(annualBase * 100) / 100,
           currency: pricing.currency,
           gstPercent: pricing.gstPercent,

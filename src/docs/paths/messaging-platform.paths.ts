@@ -11,7 +11,7 @@ import {
 
 const termMonthsSchema = {
   type: "integer",
-  enum: [12, 24, 36, 60],
+  enum: [1, 3, 12, 24, 36, 60],
   description: "Subscription term in months.",
 };
 
@@ -800,7 +800,7 @@ export const platformExtPaths: OpenApiPaths = {
           type: "object",
           properties: {
             trialDaysDefault: { type: "integer", minimum: 1, maximum: 90 },
-            defaultTermMonths: { type: "integer", enum: [12, 24, 36, 60] },
+            defaultTermMonths: { type: "integer", enum: [1, 3, 12, 24, 36, 60] },
             defaultGstPercent: { type: "number", minimum: 0, maximum: 100 },
             defaultContactUsUrl: { type: "string", nullable: true },
             defaultContactPhone: { type: "string", nullable: true },

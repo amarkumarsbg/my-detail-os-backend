@@ -40,7 +40,7 @@ export type SubscriptionPricingBreakdown = {
 export type SubscriptionPricingConfig = {
   source: "environment" | "platform_settings";
   currency: string;
-  termBasePrices: { 12: number; 24: number; 36: number; 60: number };
+  termBasePrices: { 1: number; 3: number; 12: number; 24: number; 36: number; 60: number };
   planMultipliers: Record<PlanCode, number>;
   addOns: {
     extraBranchPrice: number;
@@ -55,6 +55,8 @@ export type SubscriptionPricingConfig = {
 };
 
 const TERM_LABELS: Record<number, string> = {
+  1: "1 month",
+  3: "3 months",
   12: "1 year",
   24: "2 years",
   36: "3 years",
@@ -62,6 +64,8 @@ const TERM_LABELS: Record<number, string> = {
 };
 
 const ENV_KEYS = [
+  "SUBSCRIPTION_BASE_PRICE_1",
+  "SUBSCRIPTION_BASE_PRICE_3",
   "SUBSCRIPTION_BASE_PRICE_12",
   "SUBSCRIPTION_BASE_PRICE_24",
   "SUBSCRIPTION_BASE_PRICE_36",
@@ -93,6 +97,8 @@ export function getSubscriptionPricingConfigFromEnv(): SubscriptionPricingConfig
     source: "environment",
     currency: process.env.SUBSCRIPTION_CURRENCY?.trim() || "INR",
     termBasePrices: {
+      1: envNumber("SUBSCRIPTION_BASE_PRICE_1", 999),
+      3: envNumber("SUBSCRIPTION_BASE_PRICE_3", 2499),
       12: envNumber("SUBSCRIPTION_BASE_PRICE_12", 9999),
       24: envNumber("SUBSCRIPTION_BASE_PRICE_24", 18999),
       36: envNumber("SUBSCRIPTION_BASE_PRICE_36", 26999),
@@ -115,6 +121,7 @@ export function getSubscriptionPricingConfigFromEnv(): SubscriptionPricingConfig
     editableViaPlatformPlansApi: [
       "planName",
       "limits",
+      "allowedTerms",
       "termBasePrices",
       "planMultipliers",
       "addOns",
@@ -128,7 +135,7 @@ export function getSubscriptionPricingConfigFromEnv(): SubscriptionPricingConfig
 
 export type SubscriptionPricingPatch = {
   currency?: string;
-  termBasePrices?: Partial<{ 12: number; 24: number; 36: number; 60: number }>;
+  termBasePrices?: Partial<{ 1: number; 3: number; 12: number; 24: number; 36: number; 60: number }>;
   planMultipliers?: Partial<Record<PlanCode, number>>;
   addOns?: Partial<{
     extraBranchPrice: number;
@@ -150,6 +157,8 @@ export function mergeSubscriptionPricingConfig(
     source,
     currency: typeof patch.currency === "string" && patch.currency.trim() ? patch.currency.trim() : base.currency,
     termBasePrices: {
+      1: safeNumber(patch.termBasePrices?.[1] ?? base.termBasePrices[1], base.termBasePrices[1]),
+      3: safeNumber(patch.termBasePrices?.[3] ?? base.termBasePrices[3], base.termBasePrices[3]),
       12: safeNumber(patch.termBasePrices?.[12] ?? base.termBasePrices[12], base.termBasePrices[12]),
       24: safeNumber(patch.termBasePrices?.[24] ?? base.termBasePrices[24], base.termBasePrices[24]),
       36: safeNumber(patch.termBasePrices?.[36] ?? base.termBasePrices[36], base.termBasePrices[36]),
@@ -221,12 +230,12 @@ export function calculateSubscriptionPricing(input: {
   const { code: referralCode, message: referralValidationMessage } = validateReferralCode(
     input.payload.referralCode
   );
-  if (![12, 24, 36, 60].includes(termMonths)) {
-    throw new Error("Unsupported term. Allowed: 12, 24, 36, 60 months.");
+  if (![1, 3, 12, 24, 36, 60].includes(termMonths)) {
+    throw new Error("Unsupported term. Allowed: 1, 3, 12, 24, 36, 60 months.");
   }
 
   const baseTerm = safeNumber(
-    cfg.termBasePrices[termMonths as 12 | 24 | 36 | 60] ?? cfg.termBasePrices[12],
+    (cfg.termBasePrices as Record<number, number>)[termMonths] ?? cfg.termBasePrices[12],
     cfg.termBasePrices[12]
   );
   const multiplier = safeNumber(cfg.planMultipliers[input.planCode], 1);

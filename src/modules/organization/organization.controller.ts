@@ -69,7 +69,7 @@ export async function postStudioRenewRequest(req: Request, res: Response, next: 
       .object({
         notes: z.string().max(500).optional(),
         method: z.string().max(64).optional(),
-        termMonths: z.union([z.literal(12), z.literal(24), z.literal(36), z.literal(60)]).optional(),
+        termMonths: z.union([z.literal(1), z.literal(3), z.literal(12), z.literal(24), z.literal(36), z.literal(60)]).optional(),
         extraBranches: z.number().int().nonnegative().optional(),
         extraUsers: z.number().int().nonnegative().optional(),
         referralCode: z.string().max(32).nullable().optional(),
@@ -90,7 +90,7 @@ export async function postStudioSubscriptionPricing(req: Request, res: Response,
     }
     const body = z
       .object({
-        termMonths: z.union([z.literal(12), z.literal(24), z.literal(36), z.literal(60)]),
+        termMonths: z.union([z.literal(1), z.literal(3), z.literal(12), z.literal(24), z.literal(36), z.literal(60)]),
         extraBranches: z.number().int().nonnegative().default(0),
         extraUsers: z.number().int().nonnegative().default(0),
         referralCode: z.string().max(32).nullable().optional(),
@@ -194,7 +194,7 @@ const patchSchema = z.object({
   contactUsUrl: z.string().nullable().optional(),
   contactPhone: z.string().nullable().optional(),
   upgradeUrl: z.string().nullable().optional(),
-  termMonths: z.union([z.literal(12), z.literal(24), z.literal(36), z.literal(60)]).optional(),
+  termMonths: z.union([z.literal(1), z.literal(3), z.literal(12), z.literal(24), z.literal(36), z.literal(60)]).optional(),
   startsAt: z.string().datetime().nullable().optional(),
   expiresAt: z.string().datetime().nullable().optional(),
   paymentStatus: z.enum(["PAID", "PENDING", "PROCESSING", "FAILED"]).optional(),
@@ -252,7 +252,7 @@ export async function postPlatformVerifyPayment(req: Request, res: Response, nex
 const markPaidSchema = z.object({
   txnReference: z.string().nullable().optional(),
   amount: z.number().nonnegative().nullable().optional(),
-  termMonths: z.union([z.literal(12), z.literal(24), z.literal(36), z.literal(60)]).optional(),
+  termMonths: z.union([z.literal(1), z.literal(3), z.literal(12), z.literal(24), z.literal(36), z.literal(60)]).optional(),
   notes: z.string().nullable().optional(),
 });
 

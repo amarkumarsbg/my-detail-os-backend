@@ -9,14 +9,17 @@ import { prisma } from "./prisma.js";
 import { env } from "../config/env.js";
 import { AppHttpError } from "./app-http-error.js";
 import {
+  DEFAULT_ALLOWED_TERMS,
   DEFAULT_PLAN_CATALOG,
   PLAN_CODE_REGEX,
   normalizePlanCode,
+  parseAllowedTerms,
   parsePlanLimits,
   type DynamicPlanDefinition,
   type PlanCode,
   type PlanLimits,
   type PlanTemplate,
+  type TermMonths,
 } from "./plan-catalog.js";
 import {
   getSubscriptionPricingConfigFromEnv,
@@ -32,6 +35,8 @@ export type PlanOverride = {
   limits?: PlanLimits;
   /** When false, plan is hidden from public website catalog. */
   publicVisible?: boolean;
+  /** Term lengths (months) this plan may be sold on. */
+  allowedTerms?: TermMonths[];
 };
 
 export type PlatformSettingsPayload = {
@@ -68,6 +73,7 @@ function parsePlanDefinition(raw: unknown): DynamicPlanDefinition | null {
     planName,
     limits: parsePlanLimits(entry.limits),
     publicVisible: entry.publicVisible !== false,
+    allowedTerms: parseAllowedTerms(entry.allowedTerms),
     isBuiltIn: entry.isBuiltIn === true,
   };
 }
@@ -103,10 +109,14 @@ function parseLegacyOverrides(raw: unknown): Partial<Record<string, PlanOverride
     if (typeof entry.publicVisible === "boolean") {
       override.publicVisible = entry.publicVisible;
     }
+    if (entry.allowedTerms !== undefined) {
+      override.allowedTerms = parseAllowedTerms(entry.allowedTerms);
+    }
     if (
       override.planName !== undefined ||
       override.limits !== undefined ||
-      override.publicVisible !== undefined
+      override.publicVisible !== undefined ||
+      override.allowedTerms !== undefined
     ) {
       planOverrides[code] = override;
     }
@@ -121,10 +131,15 @@ export function resolvePlanCatalog(
 ): DynamicPlanDefinition[] {
   const base =
     planCatalog && planCatalog.length > 0
-      ? planCatalog.map((p) => ({ ...p, limits: { ...p.limits } }))
+      ? planCatalog.map((p) => ({
+          ...p,
+          limits: { ...p.limits },
+          allowedTerms: parseAllowedTerms(p.allowedTerms),
+        }))
       : DEFAULT_PLAN_CATALOG.map((p) => ({
           ...p,
           limits: { ...p.limits },
+          allowedTerms: [...p.allowedTerms],
         }));
 
   const byCode = new Map(base.map((p) => [p.planCode, p]));
@@ -137,6 +152,9 @@ export function resolvePlanCatalog(
         planName: override.planName?.trim() || code,
         limits: override.limits ?? { maxBranches: 1, maxStaff: 3 },
         publicVisible: override.publicVisible !== false,
+        allowedTerms: override.allowedTerms
+          ? parseAllowedTerms(override.allowedTerms)
+          : [...DEFAULT_ALLOWED_TERMS],
         isBuiltIn: false,
       });
       continue;
@@ -151,6 +169,10 @@ export function resolvePlanCatalog(
         override.publicVisible !== undefined
           ? override.publicVisible
           : existing.publicVisible,
+      allowedTerms:
+        override.allowedTerms !== undefined
+          ? parseAllowedTerms(override.allowedTerms)
+          : parseAllowedTerms(existing.allowedTerms),
     });
   }
   return Array.from(byCode.values());
@@ -167,7 +189,7 @@ export function parsePlatformSettingsPayload(raw: unknown): PlatformSettingsPayl
       ? Math.min(90, Math.max(1, Math.floor(obj.trialDaysDefault)))
       : undefined;
   const defaultTermMonths =
-    typeof obj.defaultTermMonths === "number" && [12, 24, 36, 60].includes(obj.defaultTermMonths)
+    typeof obj.defaultTermMonths === "number" && [1, 3, 12, 24, 36, 60].includes(obj.defaultTermMonths)
       ? obj.defaultTermMonths
       : undefined;
   const defaultGstPercent =
@@ -217,7 +239,7 @@ function parseSubscriptionPricingPatch(raw: unknown): SubscriptionPricingPatch |
   if (terms && typeof terms === "object" && !Array.isArray(terms)) {
     const t = terms as Record<string, unknown>;
     const termBasePrices: SubscriptionPricingPatch["termBasePrices"] = {};
-    for (const m of [12, 24, 36, 60] as const) {
+    for (const m of [1, 3, 12, 24, 36, 60] as const) {
       const v = t[String(m)] ?? t[m as unknown as string];
       if (typeof v === "number" && Number.isFinite(v) && v >= 0) termBasePrices[m] = v;
     }
@@ -275,6 +297,7 @@ function catalogToOverrides(catalog: DynamicPlanDefinition[]): Partial<Record<st
       planName: p.planName,
       limits: p.limits,
       publicVisible: p.publicVisible,
+      allowedTerms: parseAllowedTerms(p.allowedTerms),
     };
   }
   return out;
@@ -410,6 +433,7 @@ export async function updatePlatformSettings(input: {
 
 export type EffectivePlanTemplate = PlanTemplate & {
   publicVisible: boolean;
+  allowedTerms: TermMonths[];
 };
 
 export function getEffectivePlanCatalog(
@@ -425,6 +449,7 @@ export function getEffectivePlanCatalog(
     planName: p.planName,
     limits: { ...p.limits },
     publicVisible: p.publicVisible !== false,
+    allowedTerms: parseAllowedTerms(p.allowedTerms),
   }));
 }
 
@@ -455,6 +480,7 @@ export type CreatePlanInput = {
   planName: string;
   limits?: PlanLimits;
   publicVisible?: boolean;
+  allowedTerms?: TermMonths[];
   multiplier?: number;
 };
 
@@ -486,6 +512,7 @@ export async function createPlatformPlan(
     planName: name,
     limits: parsePlanLimits(input.limits ?? { maxBranches: 1, maxStaff: 3 }),
     publicVisible: input.publicVisible !== false,
+    allowedTerms: parseAllowedTerms(input.allowedTerms ?? DEFAULT_ALLOWED_TERMS),
     isBuiltIn: false,
   };
 
@@ -514,6 +541,7 @@ export type UpdatePlanInput = {
   planName?: string;
   limits?: PlanLimits;
   publicVisible?: boolean;
+  allowedTerms?: TermMonths[];
   multiplier?: number;
 };
 
@@ -544,6 +572,10 @@ export async function updatePlatformPlan(
         : current.limits,
     publicVisible:
       input.publicVisible !== undefined ? input.publicVisible : current.publicVisible,
+    allowedTerms:
+      input.allowedTerms !== undefined
+        ? parseAllowedTerms(input.allowedTerms)
+        : parseAllowedTerms(current.allowedTerms),
   };
 
   let pricingPatch = payload.subscriptionPricing;

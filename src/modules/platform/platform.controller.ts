@@ -4,6 +4,7 @@
  * - GET  /api/platform/users
  * - GET  /api/platform/branches
  * - GET  /api/platform/renewals|bills|payments|audit
+ * - GET  /api/platform/organizations/:orgId/activity
  * - GET/POST/PATCH /api/platform/referrals
  * - GET/PUT/POST /api/platform/plans (+ PATCH/DELETE /plans/:code)
  * - GET/PUT /api/platform/settings
@@ -18,7 +19,7 @@ import { prisma } from "../../lib/prisma.js";
 import { AppHttpError } from "../../lib/app-http-error.js";
 import { writePlatformAuditLog } from "../../lib/platform-audit.js";
 import { env } from "../../config/env.js";
-import { normalizePlanCode, parsePlanLimits } from "../../lib/plan-catalog.js";
+import { normalizePlanCode, parseAllowedTerms, parsePlanLimits } from "../../lib/plan-catalog.js";
 import type { SubscriptionPricingPatch } from "../../lib/subscription-pricing.js";
 import {
   createPlatformPlan,
@@ -70,6 +71,16 @@ const PLAN_CODE_STRING = z
   .max(24)
   .transform((s) => normalizePlanCode(s))
   .refine((s) => /^[A-Z][A-Z0-9_]{1,23}$/.test(s), "Invalid plan code");
+
+const termMonthsLiteral = z.union([
+  z.literal(1),
+  z.literal(3),
+  z.literal(12),
+  z.literal(24),
+  z.literal(36),
+  z.literal(60),
+]);
+const allowedTermsSchema = z.array(termMonthsLiteral).min(1).max(6);
 
 // ─── GET /api/platform/dashboard ─────────────────────────────────────────────
 
@@ -524,6 +535,130 @@ export async function listPlatformAudit(req: Request, res: Response, next: NextF
   }
 }
 
+// ─── GET /api/platform/organizations/:orgId/activity ─────────────────────────
+/**
+ * Read-only Platform Owner view of Workshop activityLogs for one organization.
+ * Reuses AppJsonRow collection="activityLogs" — does not touch PlatformAuditLog.
+ */
+export async function listPlatformOrganizationActivity(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const orgId = String(req.params["orgId"] ?? "").trim();
+    if (!orgId) throw new AppHttpError(400, "orgId is required.", "MISSING_PARAM");
+
+    const org = await prisma.organization.findUnique({
+      where: { id: orgId },
+      select: { id: true, name: true },
+    });
+    if (!org) throw new AppHttpError(404, "Organization not found.", "ORG_NOT_FOUND");
+
+    const q = req.query as Record<string, unknown>;
+    const { skip, take, page } = pageParams(q);
+    const action = typeof q.action === "string" ? q.action.trim() : "";
+    const entityType = typeof q.entityType === "string" ? q.entityType.trim() : "";
+    const actor = typeof q.actor === "string" ? q.actor.trim() : "";
+    const search = typeof q.search === "string" ? q.search.trim() : "";
+    const since = parseDateFilter(q.since);
+    const until = parseDateFilter(q.until);
+
+    const actionPat = action ? `%${action}%` : null;
+    const entityPat = entityType ? `%${entityType}%` : null;
+    const actorPat = actor ? `%${actor}%` : null;
+    const searchPat = search ? `%${search}%` : null;
+
+    const rows = await prisma.$queryRaw<
+      Array<{
+        payload: unknown;
+        entityId: string;
+        createdAt: Date;
+        total_count: bigint;
+      }>
+    >`
+      SELECT
+        payload,
+        "entityId",
+        "createdAt",
+        COUNT(*) OVER() AS total_count
+      FROM "AppJsonRow"
+      WHERE collection = 'activityLogs'
+        AND "organizationId" = ${orgId}
+        AND (${since}::timestamptz IS NULL OR "createdAt" >= ${since})
+        AND (${until}::timestamptz IS NULL OR "createdAt" <= ${until})
+        AND (
+          ${actionPat}::text IS NULL
+          OR COALESCE(payload->>'action', '') ILIKE ${actionPat}
+        )
+        AND (
+          ${entityPat}::text IS NULL
+          OR COALESCE(payload->>'entityType', '') ILIKE ${entityPat}
+        )
+        AND (
+          ${actorPat}::text IS NULL
+          OR COALESCE(payload->>'userName', '') ILIKE ${actorPat}
+          OR COALESCE(payload->>'userId', '') ILIKE ${actorPat}
+        )
+        AND (
+          ${searchPat}::text IS NULL
+          OR COALESCE(payload->>'details', '') ILIKE ${searchPat}
+          OR COALESCE(payload->>'entityLabel', '') ILIKE ${searchPat}
+          OR COALESCE(payload->>'action', '') ILIKE ${searchPat}
+          OR COALESCE(payload->>'entityId', '') ILIKE ${searchPat}
+        )
+      ORDER BY "createdAt" DESC
+      LIMIT ${take} OFFSET ${skip}
+    `;
+
+    const total = rows.length > 0 ? Number(rows[0]!.total_count) : 0;
+
+    const activities = rows.map((r) => {
+      const p =
+        r.payload && typeof r.payload === "object" && !Array.isArray(r.payload)
+          ? (r.payload as Record<string, unknown>)
+          : {};
+      const createdAtRaw =
+        typeof p.createdAt === "string"
+          ? p.createdAt
+          : typeof p.timestamp === "string"
+            ? p.timestamp
+            : r.createdAt.toISOString();
+      return {
+        id: typeof p.id === "string" ? p.id : r.entityId,
+        organizationId: org.id,
+        organizationName: org.name,
+        action: typeof p.action === "string" ? p.action : "",
+        entityType: typeof p.entityType === "string" ? p.entityType : "",
+        entityId: typeof p.entityId === "string" ? p.entityId : r.entityId,
+        entityLabel: typeof p.entityLabel === "string" ? p.entityLabel : null,
+        userId: typeof p.userId === "string" ? p.userId : null,
+        userName: typeof p.userName === "string" ? p.userName : null,
+        details:
+          typeof p.details === "string"
+            ? p.details
+            : p.details != null
+              ? JSON.stringify(p.details)
+              : null,
+        createdAt: createdAtRaw,
+      };
+    });
+
+    res.json({
+      data: {
+        activities,
+        total,
+        page,
+        pageSize: take,
+        organization: { id: org.id, name: org.name },
+      },
+      error: null,
+    });
+  } catch (e) {
+    next(e);
+  }
+}
+
 // ─── GET /api/platform/referrals ─────────────────────────────────────────────
 
 export async function listPlatformReferrals(req: Request, res: Response, next: NextFunction) {
@@ -713,6 +848,8 @@ const pricingPatchSchema = z.object({
   gstPercent: z.number().min(0).max(100).optional(),
   termBasePrices: z
     .object({
+      1: z.number().min(0).optional(),
+      3: z.number().min(0).optional(),
       12: z.number().min(0).optional(),
       24: z.number().min(0).optional(),
       36: z.number().min(0).optional(),
@@ -738,6 +875,7 @@ const putPlansSchema = z.object({
         planName: z.string().min(1).max(80).optional(),
         limits: planLimitsSchema.optional(),
         publicVisible: z.boolean().optional(),
+        allowedTerms: allowedTermsSchema.optional(),
       })
     )
     .optional()
@@ -778,6 +916,9 @@ export async function putPlatformPlans(req: Request, res: Response, next: NextFu
             }
           : {}),
         ...(override.publicVisible !== undefined ? { publicVisible: override.publicVisible } : {}),
+        ...(override.allowedTerms !== undefined
+          ? { allowedTerms: parseAllowedTerms(override.allowedTerms) }
+          : {}),
       };
     }
 
@@ -837,6 +978,7 @@ const createPlanSchema = z.object({
   planName: z.string().min(1).max(80),
   limits: planLimitsSchema.optional(),
   publicVisible: z.boolean().optional().default(true),
+  allowedTerms: allowedTermsSchema.optional(),
   multiplier: z.number().min(0).optional().default(1),
 });
 
@@ -853,6 +995,7 @@ export async function postPlatformPlan(req: Request, res: Response, next: NextFu
         planName: body.planName,
         limits: body.limits ? parsePlanLimits(body.limits) : undefined,
         publicVisible: body.publicVisible,
+        allowedTerms: body.allowedTerms,
         multiplier: body.multiplier,
       },
       actor
@@ -873,6 +1016,7 @@ const patchPlanSchema = z.object({
   planName: z.string().min(1).max(80).optional(),
   limits: planLimitsSchema.optional(),
   publicVisible: z.boolean().optional(),
+  allowedTerms: allowedTermsSchema.optional(),
   multiplier: z.number().min(0).optional(),
 });
 
@@ -890,6 +1034,7 @@ export async function patchPlatformPlan(req: Request, res: Response, next: NextF
         planName: body.planName,
         limits: body.limits ? parsePlanLimits(body.limits) : undefined,
         publicVisible: body.publicVisible,
+        allowedTerms: body.allowedTerms,
         multiplier: body.multiplier,
       },
       actor

@@ -28,6 +28,8 @@ export function isExportLocked(expiresAt: Date | null | undefined, now: Date = n
 }
 
 export function termLabelFromMonths(termMonths: number): string {
+  if (termMonths === 1) return "1 month";
+  if (termMonths === 3) return "3 months (quarterly)";
   const years = termMonths / 12;
   if (Number.isInteger(years) && years >= 1) {
     return years === 1 ? "1 year" : `${years} years`;
@@ -47,6 +49,6 @@ export function addMonths(date: Date, months: number): Date {
 }
 
 export function normalizeTermMonths(raw: number | null | undefined): number {
-  if (raw === 24 || raw === 36 || raw === 60) return raw;
+  if (raw === 1 || raw === 3 || raw === 12 || raw === 24 || raw === 36 || raw === 60) return raw;
   return 12;
 }
