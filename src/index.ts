@@ -61,12 +61,12 @@ app.use(
       const isLocalhost =
         /^http:\/\/localhost:\d+$/.test(origin) ||
         /^http:\/\/127\.0\.0\.1:\d+$/.test(origin);
-      // Vercel preview URLs + My Detail OS production host.
+      // Vercel preview / production aliases + My Detail OS custom domain.
       const isAllowedVercelPreview =
-        /^https:\/\/prime-detailers-website(?:-[a-z0-9]+)?(?:-amarkumarsbgs-projects)?\.vercel\.app$/.test(
+        /^https:\/\/my-detail-os-website(?:-[a-z0-9]+)?(?:-amarkumarsbgs-projects)?\.vercel\.app$/.test(
           origin
         ) ||
-        /^https:\/\/prime-detailer-fs-demo(?:-[a-z0-9]+)?(?:-amarkumarsbgs-projects)?\.vercel\.app$/.test(
+        /^https:\/\/my-detail-os(?:-[a-z0-9]+)?(?:-amarkumarsbgs-projects)?\.vercel\.app$/.test(
           origin
         ) ||
         /^https:\/\/[a-z0-9-]+-amarkumarsbgs-projects\.vercel\.app$/.test(origin);
