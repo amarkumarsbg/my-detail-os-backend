@@ -96,7 +96,7 @@ describe("processOrganizationReminders", () => {
   const settings = {
     whatsappReminderEnabled: true,
     reminderLeadDays: 7,
-    businessName: "Prime Detailers",
+    businessName: "MY DETAIL OS",
   };
   const now = new Date("2026-08-21T12:00:00");
 

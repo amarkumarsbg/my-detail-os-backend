@@ -15,6 +15,7 @@ import { writePlatformAuditLog } from "../../lib/platform-audit.js";
 import { signAuthToken } from "../auth/auth.service.js";
 import { asLimitsJson } from "./organization-subscription.service.js";
 import { addMonths } from "../../lib/subscription-lock.js";
+import { ensureNonReservedSlug } from "../../lib/reserved-slugs.js";
 
 export type ProvisionOrganizationInput = {
   businessName: string;
@@ -58,16 +59,6 @@ export type ProvisionOrganizationResult = {
   };
   accessToken: string;
 };
-
-function slugify(raw: string): string {
-  const base = raw
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48);
-  return base || "workshop";
-}
 
 function shortId(): string {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -151,13 +142,13 @@ export async function provisionOrganization(
   const userId = `usr-${shortId()}`;
   const subId = `sub-${shortId()}`;
 
-  let slug = slugify(businessName);
+  let slug = ensureNonReservedSlug(businessName);
   const slugTaken = await prisma.organization.findUnique({
     where: { slug },
     select: { id: true },
   });
   if (slugTaken) {
-    slug = `${slug}-${shortId().slice(-6)}`;
+    slug = ensureNonReservedSlug(`${slug}-${shortId().slice(-6)}`);
   }
 
   const passwordHash = await bcrypt.hash(password, 10);

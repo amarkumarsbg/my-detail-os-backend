@@ -65,10 +65,10 @@ export function buildOpenApiDocument(options?: { serverUrl?: string }) {
   return {
     openapi: "3.0.3",
     info: {
-      title: "Prime Detailers API",
+      title: "MY DETAIL OS API",
       version: "0.1.0",
       description: [
-        "Express API for Prime Detailers studio and SaaS platform.",
+        "Express API for MY DETAIL OS studio and SaaS platform.",
         "",
         "## Authentication",
         "1. Call `POST /api/auth/login` (or OTP verify) to obtain `accessToken`.",

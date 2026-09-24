@@ -53,14 +53,17 @@ function buildMessage(
     return buildPaymentPendingReminderWhatsAppMessage({
       pendingAmount: amount,
       statementUrl: publicCustomerLedgerShareUrl(publicBaseUrl, reminder.customerId),
-      businessName: settings.businessName || "Prime Detailers",
+      businessName: settings.businessName || "MY DETAIL OS",
       invoiceUrl: reminder.invoiceId
         ? publicInvoiceShareUrl(publicBaseUrl, reminder.invoiceId)
         : undefined,
       invoiceNumber: reminder.invoiceNumber,
     });
   }
-  return buildServiceReminderWhatsAppMessage(reminder);
+  return buildServiceReminderWhatsAppMessage(
+    reminder,
+    settings.businessName || "MY DETAIL OS"
+  );
 }
 
 /**
@@ -162,7 +165,7 @@ export function parseAppSettingsPayload(raw: unknown): ReminderJobOrgSettings {
     businessName:
       typeof o.businessName === "string" && o.businessName.trim()
         ? o.businessName.trim()
-        : "Prime Detailers",
+        : "MY DETAIL OS",
   };
 }
 

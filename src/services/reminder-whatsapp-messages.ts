@@ -28,16 +28,20 @@ function formatDue(dueDate: string): string {
   });
 }
 
-/** Mirrors frontend buildServiceReminderWhatsAppMessage. */
-export function buildServiceReminderWhatsAppMessage(reminder: ReminderRecord): string {
+/** Mirrors frontend buildServiceReminderWhatsAppMessage. Prefer organization businessName. */
+export function buildServiceReminderWhatsAppMessage(
+  reminder: ReminderRecord,
+  businessName = "MY DETAIL OS"
+): string {
   const firstName = reminder.customerName.trim().split(/\s+/)[0] ?? reminder.customerName;
   const typeLabel = TYPE_LABEL[String(reminder.type ?? "")] ?? String(reminder.type ?? "Service");
   const vehicle = `${reminder.vehicleMakeModel ?? ""} (${reminder.vehicleRegNumber ?? ""})`.trim();
+  const brand = businessName.trim() || "MY DETAIL OS";
 
   return [
     `Hi *${firstName}*,`,
     ``,
-    `Friendly reminder from *Prime Detailers* regarding your vehicle.`,
+    `Friendly reminder from *${brand}* regarding your vehicle.`,
     `Reminder: *${typeLabel}*`,
     `Customer: ${reminder.customerName}`,
     `Vehicle: ${vehicle}`,
@@ -46,7 +50,7 @@ export function buildServiceReminderWhatsAppMessage(reminder: ReminderRecord): s
     ``,
     `Book a slot when convenient — reply here or call us.`,
     ``,
-    `— Team Prime Detailers`,
+    `— Team ${brand}`,
   ]
     .filter(Boolean)
     .join("\n");

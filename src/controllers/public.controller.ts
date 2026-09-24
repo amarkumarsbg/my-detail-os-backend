@@ -168,6 +168,7 @@ export async function postPublicSignup(req: Request, res: Response, next: NextFu
         accessToken: provisioned.accessToken,
         user: provisioned.user,
         organizationId: provisioned.organizationId,
+        organization: provisioned.organization,
         branch: provisioned.branch,
         subscription: provisioned.subscription,
       },

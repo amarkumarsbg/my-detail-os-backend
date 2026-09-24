@@ -430,7 +430,7 @@ export async function ensureDefaultOrganization(opts?: {
   name?: string;
   maxBranches?: number;
 }): Promise<string> {
-  const name = opts?.name ?? "Prime Detailers";
+  const name = opts?.name ?? "MY DETAIL OS";
   const branchCount = await prisma.branch.count();
   const maxBranches = opts?.maxBranches ?? Math.max(1, branchCount);
   const maxStaff = DEFAULT_PLAN_CATALOG.find((p) => p.planCode === "STARTER")?.limits.maxStaff ?? 3;
@@ -442,7 +442,7 @@ export async function ensureDefaultOrganization(opts?: {
     create: {
       id: DEFAULT_ORG_ID,
       name,
-      slug: "prime-detailers",
+      slug: "my-detail-os",
       subscription: {
         create: {
           id: "sub-default",

@@ -3,7 +3,7 @@ import { env } from "../config/env.js";
 export type ResendSendResult = { ok: true } | { ok: false; detail: string };
 
 /** Resend-allowed test From until your domain is verified at resend.com/domains */
-export const RESEND_TEST_FROM = "Prime Detailers <onboarding@resend.dev>";
+export const RESEND_TEST_FROM = "MY DETAIL OS <onboarding@resend.dev>";
 
 export function isResendConfigured(): boolean {
   return Boolean(env.RESEND_API_KEY);

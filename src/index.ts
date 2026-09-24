@@ -61,7 +61,7 @@ app.use(
       const isLocalhost =
         /^http:\/\/localhost:\d+$/.test(origin) ||
         /^http:\/\/127\.0\.0\.1:\d+$/.test(origin);
-      // Vercel preview URLs change per deploy — allow known project patterns.
+      // Vercel preview URLs + MY DETAIL OS production host.
       const isAllowedVercelPreview =
         /^https:\/\/prime-detailers-website(?:-[a-z0-9]+)?(?:-amarkumarsbgs-projects)?\.vercel\.app$/.test(
           origin
@@ -70,9 +70,13 @@ app.use(
           origin
         ) ||
         /^https:\/\/[a-z0-9-]+-amarkumarsbgs-projects\.vercel\.app$/.test(origin);
+      const isMyDetailOs =
+        /^https:\/\/(www\.)?mydetailos\.com$/.test(origin) ||
+        /^https:\/\/[a-z0-9-]+\.mydetailos\.com$/.test(origin);
       const ok =
         allowed.includes(origin) ||
         isAllowedVercelPreview ||
+        isMyDetailOs ||
         (process.env.NODE_ENV !== "production" && isLocalhost);
       cb(null, ok ? origin : false);
     },
@@ -89,7 +93,7 @@ app.use("/uploads", express.static(uploadsRoot, { maxAge: 7 * 24 * 60 * 60 * 100
 app.get("/", (_req, res) => {
   res.json({
     ok: true,
-    name: "Prime Detailers API",
+    name: "MY DETAIL OS API",
     hint: "Use the Next.js app in your browser (usually port 3000), not this URL alone.",
     frontend: env.FRONTEND_ORIGIN,
     endpoints: {
@@ -181,7 +185,7 @@ app.get("/api/public/job-cards/:secureToken/photos", async (req, res, next) => {
         : null;
 
     const businessSettings = {
-      businessName: settingsPayload?.businessName ?? "Prime Detailers",
+      businessName: settingsPayload?.businessName ?? "MY DETAIL OS",
       logoUrl: settingsPayload?.logoUrl ?? null,
     };
 
@@ -213,9 +217,26 @@ app.get("/api/public/ledgers/:customerId", async (req, res, next) => {
   }
 });
 
-app.get("/api/public/branding", async (_req, res, next) => {
+app.get("/api/public/branding", async (req, res, next) => {
   try {
-    const data = await getPublicBranding();
+    const slug =
+      typeof req.query.slug === "string"
+        ? req.query.slug
+        : Array.isArray(req.query.slug)
+          ? String(req.query.slug[0] ?? "")
+          : "";
+    const data = await getPublicBranding(slug || undefined);
+    res.json({ data, error: null });
+  } catch (e) {
+    next(e);
+  }
+});
+
+app.get("/api/public/organizations/by-slug/:slug", async (req, res, next) => {
+  try {
+    const slug = Array.isArray(req.params.slug) ? req.params.slug[0]! : req.params.slug!;
+    const { getOrganizationBySlug } = await import("./services/organization-public.service.js");
+    const data = await getOrganizationBySlug(slug);
     res.json({ data, error: null });
   } catch (e) {
     next(e);

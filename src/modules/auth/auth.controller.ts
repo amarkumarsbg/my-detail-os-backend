@@ -115,7 +115,7 @@ function formatTwilioSendError(err: unknown): string {
   return "Could not send SMS. Check Twilio credentials, trial verified numbers, and server logs.";
 }
 
-function authSuccessResponse(user: User, branch: Branch | null) {
+async function authSuccessResponse(user: User, branch: Branch | null) {
   const token = signAuthToken({
     id: user.id,
     email: user.email,
@@ -126,6 +126,14 @@ function authSuccessResponse(user: User, branch: Branch | null) {
     mustChangePassword: user.mustChangePassword === true,
     permissions: user.permissions,
   });
+  let organization: { id: string; name: string; slug: string | null } | null = null;
+  if (user.organizationId) {
+    const org = await prisma.organization.findUnique({
+      where: { id: user.organizationId },
+      select: { id: true, name: true, slug: true },
+    });
+    if (org) organization = org;
+  }
   return {
     accessToken: token,
     user: {
@@ -152,6 +160,7 @@ function authSuccessResponse(user: User, branch: Branch | null) {
       permissions: user.permissions || [],
       ...(user.mustChangePassword === true ? { mustChangePassword: true as const } : {}),
     },
+    organization,
     branch: branch
       ? {
           id: branch.id,
@@ -261,7 +270,7 @@ export async function verifyLoginOtp(req: Request, res: Response, next: NextFunc
     }
     await touchUserLastLogin(user.id);
     const branch = await prisma.branch.findUnique({ where: { id: user.branchId } });
-    res.json({ data: authSuccessResponse(user, branch), error: null });
+    res.json({ data: await authSuccessResponse(user, branch), error: null });
   } catch (e) {
     next(e);
   }
@@ -276,7 +285,7 @@ export async function login(req: Request, res: Response, next: NextFunction) {
       return;
     }
     // user + branch are returned together; branch lookup ran in parallel with bcrypt.
-    res.json({ data: authSuccessResponse(result.user, result.branch), error: null });
+    res.json({ data: await authSuccessResponse(result.user, result.branch), error: null });
   } catch (e) {
     next(e);
   }
@@ -333,8 +342,8 @@ export async function forgotPassword(req: Request, res: Response, next: NextFunc
               sendResult.detail.includes("only send testing") ||
               sendResult.detail.includes("verify a domain");
             const devTip = trialToBlock
-              ? "On a Resend trial, mail only goes to your Resend-login email until you add and verify your domain at resend.com/domains (then MAIL_FROM must use that domain, e.g. support@primedetailers.in). Until then you can copy the reset URL from the backend terminal, or test with a DB user whose email is your Resend account address."
-              : "Try MAIL_FROM=Prime Detailers <onboarding@resend.dev> until your domain is verified, copy the reset URL from the backend terminal, and confirm RESEND_API_KEY is valid.";
+              ? "On a Resend trial, mail only goes to your Resend-login email until you add and verify your domain at resend.com/domains (then MAIL_FROM must use that domain, e.g. support@mydetailos.com). Until then you can copy the reset URL from the backend terminal, or test with a DB user whose email is your Resend account address."
+              : "Try MAIL_FROM=MY DETAIL OS <onboarding@resend.dev> until your domain is verified, copy the reset URL from the backend terminal, and confirm RESEND_API_KEY is valid.";
             res.status(503).json({
               data: null,
               error: {
@@ -360,7 +369,7 @@ export async function forgotPassword(req: Request, res: Response, next: NextFunc
       }
     } else if (!isProduction) {
       console.warn(
-        `[auth/forgot-password] No active User has email "${normalized}" — no reset mail sent (API still returns generic success). Seed/demo accounts often use superadmin@company.com or *@prime-detailers.test. Ask your Super Admin if you need a new account.`
+        `[auth/forgot-password] No active User has email "${normalized}" — no reset mail sent (API still returns generic success). Seed/demo accounts often use superadmin@company.com or *@mydetailos.test. Ask your Super Admin if you need a new account.`
       );
     }
 
@@ -408,7 +417,7 @@ export async function changePassword(req: Request, res: Response, next: NextFunc
     });
     const refreshed = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     const branch = await prisma.branch.findUnique({ where: { id: refreshed.branchId } });
-    res.json({ data: authSuccessResponse(refreshed, branch), error: null });
+    res.json({ data: await authSuccessResponse(refreshed, branch), error: null });
   } catch (e) {
     next(e);
   }
@@ -471,7 +480,7 @@ export async function patchMe(req: Request, res: Response, next: NextFunction) {
       return;
     }
     const branch = await prisma.branch.findUnique({ where: { id: row.branchId } });
-    res.json({ data: authSuccessResponse(row, branch), error: null });
+    res.json({ data: await authSuccessResponse(row, branch), error: null });
   } catch (e) {
     next(e);
   }
@@ -505,7 +514,7 @@ export async function uploadMyAvatar(req: Request, res: Response, next: NextFunc
       return;
     }
     const branch = await prisma.branch.findUnique({ where: { id: row.branchId } });
-    res.json({ data: authSuccessResponse(row, branch), error: null });
+    res.json({ data: await authSuccessResponse(row, branch), error: null });
   } catch (e) {
     next(e);
   }

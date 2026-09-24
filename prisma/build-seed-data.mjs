@@ -24,7 +24,7 @@ const branches = [
     state: "KA",
     pincode: "560001",
     phone: "+918000000001",
-    email: "main@prime-detailers.test",
+    email: "main@mydetailos.test",
     isActive: true,
     qrCodeId: "qr-main",
     managerName: "Branch Manager One",
@@ -39,7 +39,7 @@ const branches = [
     state: "MH",
     pincode: `40000${n}`,
     phone: `+91800000000${n}`,
-    email: `branch${n}@prime-detailers.test`,
+    email: `branch${n}@mydetailos.test`,
     isActive: true,
     qrCodeId: `qr-br-00${n}`,
     managerName: `Manager ${n}`,
@@ -64,7 +64,7 @@ const staff = [
   {
     id: "usr-002",
     name: "Priya Sharma",
-    email: "priya.manager@prime-detailers.test",
+    email: "priya.manager@mydetailos.test",
     phone: "+918000000102",
     role: "BRANCH_MANAGER",
     branchId: "br-002",
@@ -75,7 +75,7 @@ const staff = [
   {
     id: "usr-003",
     name: "Ravi Mechanic",
-    email: "ravi.mech@prime-detailers.test",
+    email: "ravi.mech@mydetailos.test",
     phone: "+918000000103",
     role: "MECHANIC",
     branchId: "br-main",
@@ -88,7 +88,7 @@ const staff = [
   {
     id: "usr-004",
     name: "Sunil Mechanic",
-    email: "sunil.mech@prime-detailers.test",
+    email: "sunil.mech@mydetailos.test",
     phone: "+918000000104",
     role: "MECHANIC",
     branchId: "br-main",
@@ -100,7 +100,7 @@ const staff = [
   {
     id: "usr-005",
     name: "Neha Reception",
-    email: "neha.recv@prime-detailers.test",
+    email: "neha.recv@mydetailos.test",
     phone: "+918000000105",
     role: "RECEPTIONIST",
     branchId: "br-main",
@@ -583,7 +583,7 @@ const cashBank = {
       ? {
           bankMeta: {
             accountNumber: `000${n}112233`,
-            holderName: `Prime Detailers ${n}`,
+            holderName: `MY DETAIL OS ${n}`,
             ifsc: `HDFC0${n}0001`,
             bankName: "HDFC Bank",
             branchName: "MG Road",

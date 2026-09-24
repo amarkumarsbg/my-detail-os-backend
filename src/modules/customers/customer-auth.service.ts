@@ -27,17 +27,24 @@ interface CustomerAuthRow {
  * (mirrors the phone-clash check used by `customer.service.ts`).
  * Returns null on any mismatch (unknown phone, inactive, no password set, wrong password).
  */
+/**
+ * Authenticate customer within a specific organization (tenant-scoped).
+ * organizationId is required — never match phone across all orgs.
+ */
 export async function authenticateCustomer(
   phone: string,
-  password: string
+  password: string,
+  organizationId: string
 ): Promise<CustomerAuthRow | null> {
   const norm = normalizePhone(phone);
-  if (norm.length !== 10) return null;
+  const orgId = organizationId.trim();
+  if (norm.length !== 10 || !orgId) return null;
 
   const rows = await prisma.$queryRaw<CustomerAuthRow[]>`
     SELECT id, "organizationId", name, phone, email, "passwordHash", "isInactive"
     FROM "Customer"
-    WHERE RIGHT(REGEXP_REPLACE(phone, '\\D', '', 'g'), 10) = ${norm}
+    WHERE "organizationId" = ${orgId}
+      AND RIGHT(REGEXP_REPLACE(phone, '\\D', '', 'g'), 10) = ${norm}
     LIMIT 1
   `;
   const customer = rows[0];

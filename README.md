@@ -1,4 +1,4 @@
-# Prime Detailers — Backend API
+# MY DETAIL OS — Backend API
 
 Express + TypeScript + Prisma + PostgreSQL backend serving both the Workshop App and SaaS Admin Portal.
 
@@ -66,7 +66,7 @@ npm run test:referral-eligibility
 
 Both Workshop App and SaaS Admin are supported via `FRONTEND_ORIGIN` (comma-separated).  
 Local dev: `http://localhost:3000,http://localhost:3001`  
-Production: `https://app.primedetailers.com,https://admin.primedetailers.com`
+Production: `https://app.mydetailos.com,https://admin.mydetailos.com`
 
 ## Swagger
 
