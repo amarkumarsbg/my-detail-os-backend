@@ -583,11 +583,11 @@ const cashBank = {
       ? {
           bankMeta: {
             accountNumber: `000${n}112233`,
-            holderName: `MY DETAIL OS ${n}`,
+            holderName: `My Detail OS ${n}`,
             ifsc: `HDFC0${n}0001`,
             bankName: "HDFC Bank",
             branchName: "MG Road",
-            upiId: n === 2 ? "prime@hdfc" : undefined,
+            upiId: n === 2 ? "mydetailos@hdfc" : undefined,
           },
         }
       : {}),

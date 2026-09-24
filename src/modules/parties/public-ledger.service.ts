@@ -31,7 +31,7 @@ async function loadPublicBusinessProfile() {
       : {};
 
   return {
-    businessName: str(raw, "businessName") || "MY DETAIL OS",
+    businessName: str(raw, "businessName") || "My Detail OS",
     businessLogo: str(raw, "businessLogo") || str(raw, "logoUrl"),
     businessPhone: str(raw, "businessPhone") || str(raw, "businessWhatsApp"),
     businessAddress: str(raw, "businessAddress"),

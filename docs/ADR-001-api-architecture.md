@@ -2,7 +2,7 @@
 
 **Status:** Accepted (Phase 0 — documentation only)  
 **Date:** 2026-08-17  
-**Context:** MY DETAIL OS Express API (`backend/`)
+**Context:** My Detail OS Express API (`backend/`)
 
 ## Decision
 

@@ -144,11 +144,11 @@ async function main() {
     where: { id: orgId },
     create: {
       id: orgId,
-      name: "MY DETAIL OS",
+      name: "My Detail OS",
       slug: "my-detail-os",
     },
     update: {
-      name: "MY DETAIL OS",
+      name: "My Detail OS",
       slug: "my-detail-os",
     },
   });
@@ -532,7 +532,7 @@ async function main() {
     },
   });
 
-  const platformEmail = (process.env.PLATFORM_OWNER_EMAIL ?? "platform@prime.local").trim().toLowerCase();
+  const platformEmail = (process.env.PLATFORM_OWNER_EMAIL ?? "platform@mydetailos.local").trim().toLowerCase();
   const platformPassword = process.env.PLATFORM_OWNER_PASSWORD ?? "ChangeMe!PlatformOwner1";
   const platformHash = await bcrypt.hash(platformPassword, 10);
   const platformPhone = normalizeSuperAdminPhone(process.env.PLATFORM_OWNER_PHONE ?? "9999999998");

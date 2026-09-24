@@ -47,7 +47,7 @@ ALTER TABLE "OrganizationSubscription" ADD CONSTRAINT "OrganizationSubscription_
 
 -- Default org + subscription (limit >= existing branch count so demos are not soft-locked)
 INSERT INTO "Organization" ("id", "name", "slug", "createdAt", "updatedAt")
-VALUES ('org-default', 'Prime Detailers', 'prime-detailers', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+VALUES ('org-default', 'My Detail OS', 'my-detail-os', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
 INSERT INTO "OrganizationSubscription" (
   "id", "organizationId", "planCode", "planName", "status", "limits",

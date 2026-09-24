@@ -26,7 +26,7 @@ async function resolveBusinessName(organizationId: string): Promise<string> {
   });
   const payload = row?.payload as Record<string, unknown> | undefined;
   const name = typeof payload?.businessName === "string" ? payload.businessName.trim() : "";
-  return name || "MY DETAIL OS";
+  return name || "My Detail OS";
 }
 
 async function logWhatsAppAttempt(opts: {

@@ -61,7 +61,7 @@ app.use(
       const isLocalhost =
         /^http:\/\/localhost:\d+$/.test(origin) ||
         /^http:\/\/127\.0\.0\.1:\d+$/.test(origin);
-      // Vercel preview URLs + MY DETAIL OS production host.
+      // Vercel preview URLs + My Detail OS production host.
       const isAllowedVercelPreview =
         /^https:\/\/prime-detailers-website(?:-[a-z0-9]+)?(?:-amarkumarsbgs-projects)?\.vercel\.app$/.test(
           origin
@@ -93,7 +93,7 @@ app.use("/uploads", express.static(uploadsRoot, { maxAge: 7 * 24 * 60 * 60 * 100
 app.get("/", (_req, res) => {
   res.json({
     ok: true,
-    name: "MY DETAIL OS API",
+    name: "My Detail OS API",
     hint: "Use the Next.js app in your browser (usually port 3000), not this URL alone.",
     frontend: env.FRONTEND_ORIGIN,
     endpoints: {
@@ -185,7 +185,7 @@ app.get("/api/public/job-cards/:secureToken/photos", async (req, res, next) => {
         : null;
 
     const businessSettings = {
-      businessName: settingsPayload?.businessName ?? "MY DETAIL OS",
+      businessName: settingsPayload?.businessName ?? "My Detail OS",
       logoUrl: settingsPayload?.logoUrl ?? null,
     };
 

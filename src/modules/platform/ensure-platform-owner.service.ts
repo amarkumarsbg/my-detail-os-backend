@@ -41,7 +41,7 @@ async function ensurePlatformOwnerOnce(opts?: {
   syncPassword?: boolean;
 }): Promise<EnsurePlatformOwnerResult> {
   const syncPassword = opts?.syncPassword !== false;
-  const email = (process.env.PLATFORM_OWNER_EMAIL ?? "platform@prime.local").trim().toLowerCase();
+  const email = (process.env.PLATFORM_OWNER_EMAIL ?? "platform@mydetailos.local").trim().toLowerCase();
   const password = process.env.PLATFORM_OWNER_PASSWORD ?? "ChangeMe!PlatformOwner1";
   const name = (process.env.PLATFORM_OWNER_NAME ?? "Platform Owner").trim() || "Platform Owner";
   const phone = normalizePhone(process.env.PLATFORM_OWNER_PHONE);

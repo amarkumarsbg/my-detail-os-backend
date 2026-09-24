@@ -430,7 +430,7 @@ export async function ensureDefaultOrganization(opts?: {
   name?: string;
   maxBranches?: number;
 }): Promise<string> {
-  const name = opts?.name ?? "MY DETAIL OS";
+  const name = opts?.name ?? "My Detail OS";
   const branchCount = await prisma.branch.count();
   const maxBranches = opts?.maxBranches ?? Math.max(1, branchCount);
   const maxStaff = DEFAULT_PLAN_CATALOG.find((p) => p.planCode === "STARTER")?.limits.maxStaff ?? 3;

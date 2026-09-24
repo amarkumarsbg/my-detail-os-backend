@@ -89,7 +89,7 @@ export async function sendLoginOtpSms(
 ): Promise<{ sid: string; status: string }> {
   const from = env.TWILIO_FROM_NUMBER!.trim();
   const msg = await getClient().messages.create({
-    body: `Your MY DETAIL OS login code is ${code}. Valid 10 minutes. Do not share this code.`,
+    body: `Your My Detail OS login code is ${code}. Valid 10 minutes. Do not share this code.`,
     from,
     to: e164To,
   });

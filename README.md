@@ -1,13 +1,13 @@
-# MY DETAIL OS — Backend API
+# My Detail OS — Backend API
 
 Express + TypeScript + Prisma + PostgreSQL backend serving both the Workshop App and SaaS Admin Portal.
 
 ## Architecture
 
 ```
-prime-detailers-workshop  ──┐
-                             ├──> prime-detailers-backend (this repo)  ──> PostgreSQL
-prime-detailers-admin    ──┘
+my-detail-os-workshop  ──┐
+                          ├──> my-detail-os-api (this repo)  ──> PostgreSQL
+my-detail-os-admin     ──┘
 ```
 
 ## Setup

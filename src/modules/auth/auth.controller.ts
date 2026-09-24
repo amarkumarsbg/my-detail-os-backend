@@ -340,7 +340,7 @@ export async function forgotPassword(req: Request, res: Response, next: NextFunc
               sendResult.detail.includes("verify a domain");
             const devTip = trialToBlock
               ? "On a Resend trial, mail only goes to your Resend-login email until you add and verify your domain at resend.com/domains (then MAIL_FROM must use that domain, e.g. support@mydetailos.com). Until then you can copy the reset URL from the backend terminal, or test with a DB user whose email is your Resend account address."
-              : "Try MAIL_FROM=MY DETAIL OS <onboarding@resend.dev> until your domain is verified, copy the reset URL from the backend terminal, and confirm RESEND_API_KEY is valid.";
+              : "Try MAIL_FROM=My Detail OS <onboarding@resend.dev> until your domain is verified, copy the reset URL from the backend terminal, and confirm RESEND_API_KEY is valid.";
             res.status(503).json({
               data: null,
               error: {

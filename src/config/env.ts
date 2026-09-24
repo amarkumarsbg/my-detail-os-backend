@@ -55,7 +55,7 @@ const schema = z.object({
    * Omit in dev to log reset URLs in the API terminal instead (see forgot-password logs).
    */
   RESEND_API_KEY: z.string().optional(),
-  /** From address Resend recognizes, e.g. `MY DETAIL OS <onboarding@resend.dev>` */
+  /** From address Resend recognizes, e.g. `My Detail OS <onboarding@resend.dev>` */
   MAIL_FROM: z.string().optional(),
 
   /** S3-compatible bucket for public files (avatars + job-card photos under `avatars/`, `job-cards/`). Omit S3_* to use local `uploads/`. */

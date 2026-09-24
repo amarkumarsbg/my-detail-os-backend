@@ -1,5 +1,5 @@
 /**
- * One-time AWS S3 setup for MY DETAIL OS:
+ * One-time AWS S3 setup for My Detail OS:
  * 1. Turns OFF bucket-level Block Public Access (all four switches).
  * 2. Sets a bucket policy allowing anonymous s3:GetObject under avatars/*, job-cards/*, and branding/*.
  *
@@ -44,7 +44,7 @@ function bucketPolicyJson(bucket: string): string {
       Version: "2012-10-17",
       Statement: [
         {
-          Sid: "MY DETAIL OSPublicReadAssets",
+          Sid: "My Detail OSPublicReadAssets",
           Effect: "Allow",
           Principal: "*",
           Action: "s3:GetObject",

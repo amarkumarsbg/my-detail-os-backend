@@ -27,7 +27,7 @@ export async function sendUserCredentialsEmail(params: {
 
   const result = await sendViaResend({
     to: [params.toEmail.trim()],
-    subject: "Your MY DETAIL OS account",
+    subject: "Your My Detail OS account",
     html: `
       <p>Hi ${nameEsc},</p>
       <p>Your account has been created successfully.</p>

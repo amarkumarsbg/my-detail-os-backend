@@ -31,12 +31,12 @@ function formatDue(dueDate: string): string {
 /** Mirrors frontend buildServiceReminderWhatsAppMessage. Prefer organization businessName. */
 export function buildServiceReminderWhatsAppMessage(
   reminder: ReminderRecord,
-  businessName = "MY DETAIL OS"
+  businessName = "My Detail OS"
 ): string {
   const firstName = reminder.customerName.trim().split(/\s+/)[0] ?? reminder.customerName;
   const typeLabel = TYPE_LABEL[String(reminder.type ?? "")] ?? String(reminder.type ?? "Service");
   const vehicle = `${reminder.vehicleMakeModel ?? ""} (${reminder.vehicleRegNumber ?? ""})`.trim();
-  const brand = businessName.trim() || "MY DETAIL OS";
+  const brand = businessName.trim() || "My Detail OS";
 
   return [
     `Hi *${firstName}*,`,

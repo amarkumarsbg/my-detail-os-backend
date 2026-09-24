@@ -2,7 +2,7 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "MY DETAIL OSBucketConfigForSetupScript",
+      "Sid": "MyDetailOSBucketConfigForSetupScript",
       "Effect": "Allow",
       "Action": [
         "s3:PutBucketPolicy",
@@ -13,7 +13,7 @@
       "Resource": "arn:aws:s3:::REPLACE_WITH_YOUR_BUCKET_NAME"
     },
     {
-      "Sid": "MY DETAIL OSObjectRW",
+      "Sid": "MyDetailOSObjectRW",
       "Effect": "Allow",
       "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
       "Resource": [
@@ -23,7 +23,7 @@
       ]
     },
     {
-      "Sid": "MY DETAIL OSListPrefixes",
+      "Sid": "MyDetailOSListPrefixes",
       "Effect": "Allow",
       "Action": "s3:ListBucket",
       "Resource": "arn:aws:s3:::REPLACE_WITH_YOUR_BUCKET_NAME",

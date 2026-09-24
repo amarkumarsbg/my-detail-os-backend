@@ -2294,11 +2294,11 @@
           "openingBalanceDate": "2026-01-16",
           "bankMeta": {
             "accountNumber": "0002112233",
-            "holderName": "MY DETAIL OS 2",
+            "holderName": "My Detail OS 2",
             "ifsc": "HDFC020001",
             "bankName": "HDFC Bank",
             "branchName": "MG Road",
-            "upiId": "prime@hdfc"
+            "upiId": "mydetailos@hdfc"
           }
         },
         {
@@ -2309,7 +2309,7 @@
           "openingBalanceDate": "2026-01-16",
           "bankMeta": {
             "accountNumber": "0003112233",
-            "holderName": "MY DETAIL OS 3",
+            "holderName": "My Detail OS 3",
             "ifsc": "HDFC030001",
             "bankName": "HDFC Bank",
             "branchName": "MG Road"
@@ -2323,7 +2323,7 @@
           "openingBalanceDate": "2026-01-16",
           "bankMeta": {
             "accountNumber": "0004112233",
-            "holderName": "MY DETAIL OS 4",
+            "holderName": "My Detail OS 4",
             "ifsc": "HDFC040001",
             "bankName": "HDFC Bank",
             "branchName": "MG Road"
@@ -2337,7 +2337,7 @@
           "openingBalanceDate": "2026-01-16",
           "bankMeta": {
             "accountNumber": "0005112233",
-            "holderName": "MY DETAIL OS 5",
+            "holderName": "My Detail OS 5",
             "ifsc": "HDFC050001",
             "bankName": "HDFC Bank",
             "branchName": "MG Road"

@@ -14,7 +14,7 @@ Customers must never receive the platform login.
 1. In Render → API → **Environment**, set:
 
 ```
-PLATFORM_OWNER_EMAIL=platform@prime.local
+PLATFORM_OWNER_EMAIL=platform@mydetailos.local
 PLATFORM_OWNER_PASSWORD=ChangeMe!PlatformOwner1
 ```
 

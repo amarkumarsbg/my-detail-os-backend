@@ -53,7 +53,7 @@ function buildMessage(
     return buildPaymentPendingReminderWhatsAppMessage({
       pendingAmount: amount,
       statementUrl: publicCustomerLedgerShareUrl(publicBaseUrl, reminder.customerId),
-      businessName: settings.businessName || "MY DETAIL OS",
+      businessName: settings.businessName || "My Detail OS",
       invoiceUrl: reminder.invoiceId
         ? publicInvoiceShareUrl(publicBaseUrl, reminder.invoiceId)
         : undefined,
@@ -62,7 +62,7 @@ function buildMessage(
   }
   return buildServiceReminderWhatsAppMessage(
     reminder,
-    settings.businessName || "MY DETAIL OS"
+    settings.businessName || "My Detail OS"
   );
 }
 
@@ -165,7 +165,7 @@ export function parseAppSettingsPayload(raw: unknown): ReminderJobOrgSettings {
     businessName:
       typeof o.businessName === "string" && o.businessName.trim()
         ? o.businessName.trim()
-        : "MY DETAIL OS",
+        : "My Detail OS",
   };
 }
 

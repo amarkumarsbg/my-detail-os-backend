@@ -36,7 +36,7 @@ export function registerSwagger(app: Express): void {
     },
     swaggerUi.serve,
     swaggerUi.setup(document, {
-      customSiteTitle: "MY DETAIL OS API Docs",
+      customSiteTitle: "My Detail OS API Docs",
       swaggerOptions: {
         persistAuthorization: true,
         displayRequestDuration: true,

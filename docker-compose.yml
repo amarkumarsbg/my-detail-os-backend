@@ -4,13 +4,13 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: prime
-      POSTGRES_PASSWORD: prime
-      POSTGRES_DB: primedetailer
+      POSTGRES_USER: mydetailos
+      POSTGRES_PASSWORD: mydetailos
+      POSTGRES_DB: mydetailos
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - prime_detailer_pg:/var/lib/postgresql/data
+      - my_detail_os_pg:/var/lib/postgresql/data
 
 volumes:
-  prime_detailer_pg:
+  my_detail_os_pg:
