@@ -144,12 +144,12 @@ async function main() {
     where: { id: orgId },
     create: {
       id: orgId,
-      name: "Prime Detailers",
-      slug: "prime-detailers",
+      name: "MY DETAIL OS",
+      slug: "my-detail-os",
     },
     update: {
-      name: "Prime Detailers",
-      slug: "prime-detailers",
+      name: "MY DETAIL OS",
+      slug: "my-detail-os",
     },
   });
 
@@ -170,11 +170,11 @@ async function main() {
       paymentStatus: "PAID",
       contactUsUrl:
         process.env.DEFAULT_CONTACT_US_URL?.trim() ||
-        "mailto:support@primedetailers.in?subject=Branch%20limit%20help",
+        "mailto:support@mydetailos.com?subject=Branch%20limit%20help",
       contactPhone: process.env.DEFAULT_CONTACT_PHONE?.trim() || "+919876543210",
       upgradeUrl:
         process.env.DEFAULT_UPGRADE_URL?.trim() ||
-        "mailto:support@primedetailers.in?subject=Upgrade%20plan%20request",
+        "mailto:support@mydetailos.com?subject=Upgrade%20plan%20request",
     },
     update: {
       planCode: "STARTER",
@@ -186,11 +186,11 @@ async function main() {
       paymentStatus: "PAID",
       contactUsUrl:
         process.env.DEFAULT_CONTACT_US_URL?.trim() ||
-        "mailto:support@primedetailers.in?subject=Branch%20limit%20help",
+        "mailto:support@mydetailos.com?subject=Branch%20limit%20help",
       contactPhone: process.env.DEFAULT_CONTACT_PHONE?.trim() || "+919876543210",
       upgradeUrl:
         process.env.DEFAULT_UPGRADE_URL?.trim() ||
-        "mailto:support@primedetailers.in?subject=Upgrade%20plan%20request",
+        "mailto:support@mydetailos.com?subject=Upgrade%20plan%20request",
     },
   });
 

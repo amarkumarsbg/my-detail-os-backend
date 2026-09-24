@@ -21,9 +21,9 @@ export async function sendPasswordResetEmail(
 
   const result = await sendViaResend({
     to: [toEmail],
-    subject: "Reset your Prime Detailers password",
+    subject: "Reset your MY DETAIL OS password",
     html: `
-          <p>You requested to reset your password for Prime Detailers.</p>
+          <p>You requested to reset your password for MY DETAIL OS.</p>
           <p><a href="${hrefAttr}">Choose a new password</a></p>
           <p>If you didn't request this, you can safely ignore this message.</p>
           <p style="font-size:12px;color:#666;">This link expires in about one hour.</p>

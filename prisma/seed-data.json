@@ -9,7 +9,7 @@
       "state": "DL",
       "pincode": "110020",
       "phone": "+918000000001",
-      "email": "delhi@prime-detailers.test",
+      "email": "delhi@mydetailos.test",
       "isActive": true,
       "qrCodeId": "qr-delhi",
       "managerName": "Delhi Branch Manager",
@@ -24,7 +24,7 @@
       "state": "UP",
       "pincode": "201301",
       "phone": "+918000000002",
-      "email": "noida@prime-detailers.test",
+      "email": "noida@mydetailos.test",
       "isActive": true,
       "qrCodeId": "qr-noida",
       "managerName": "Noida Branch Manager",
@@ -48,7 +48,7 @@
     {
       "id": "usr-002",
       "name": "Priya Sharma",
-      "email": "priya.manager@prime-detailers.test",
+      "email": "priya.manager@mydetailos.test",
       "phone": "+918000000102",
       "role": "BRANCH_MANAGER",
       "branchId": "br-002",
@@ -59,7 +59,7 @@
     {
       "id": "usr-003",
       "name": "Ravi Mechanic",
-      "email": "ravi.mech@prime-detailers.test",
+      "email": "ravi.mech@mydetailos.test",
       "phone": "+918000000103",
       "role": "MECHANIC",
       "branchId": "br-main",
@@ -72,7 +72,7 @@
     {
       "id": "usr-004",
       "name": "Sunil Mechanic",
-      "email": "sunil.mech@prime-detailers.test",
+      "email": "sunil.mech@mydetailos.test",
       "phone": "+918000000104",
       "role": "MECHANIC",
       "branchId": "br-main",
@@ -84,7 +84,7 @@
     {
       "id": "usr-005",
       "name": "Neha Reception",
-      "email": "neha.recv@prime-detailers.test",
+      "email": "neha.recv@mydetailos.test",
       "phone": "+918000000105",
       "role": "RECEPTIONIST",
       "branchId": "br-main",
@@ -2294,7 +2294,7 @@
           "openingBalanceDate": "2026-01-16",
           "bankMeta": {
             "accountNumber": "0002112233",
-            "holderName": "Prime Detailers 2",
+            "holderName": "MY DETAIL OS 2",
             "ifsc": "HDFC020001",
             "bankName": "HDFC Bank",
             "branchName": "MG Road",
@@ -2309,7 +2309,7 @@
           "openingBalanceDate": "2026-01-16",
           "bankMeta": {
             "accountNumber": "0003112233",
-            "holderName": "Prime Detailers 3",
+            "holderName": "MY DETAIL OS 3",
             "ifsc": "HDFC030001",
             "bankName": "HDFC Bank",
             "branchName": "MG Road"
@@ -2323,7 +2323,7 @@
           "openingBalanceDate": "2026-01-16",
           "bankMeta": {
             "accountNumber": "0004112233",
-            "holderName": "Prime Detailers 4",
+            "holderName": "MY DETAIL OS 4",
             "ifsc": "HDFC040001",
             "bankName": "HDFC Bank",
             "branchName": "MG Road"
@@ -2337,7 +2337,7 @@
           "openingBalanceDate": "2026-01-16",
           "bankMeta": {
             "accountNumber": "0005112233",
-            "holderName": "Prime Detailers 5",
+            "holderName": "MY DETAIL OS 5",
             "ifsc": "HDFC050001",
             "bankName": "HDFC Bank",
             "branchName": "MG Road"

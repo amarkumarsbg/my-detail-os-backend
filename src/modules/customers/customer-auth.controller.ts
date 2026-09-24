@@ -3,23 +3,54 @@ import { z } from "zod";
 import { authenticateCustomer, signCustomerAuthToken, setCustomerPassword } from "./customer-auth.service.js";
 import { getCustomerById } from "./customer.service.js";
 import { customerPasswordSchema } from "../../lib/password-policy.js";
+import { getOrganizationBySlug } from "../../services/organization-public.service.js";
 
-const loginSchema = z.object({
-  phone: z.string().min(1),
-  password: z.string().min(1),
-});
+const loginSchema = z
+  .object({
+    phone: z.string().min(1),
+    password: z.string().min(1),
+    /** Preferred: resolve tenant from public slug (URL). */
+    organizationSlug: z.string().min(1).optional(),
+    /** Alternate: explicit org id when already resolved server-side. */
+    organizationId: z.string().min(1).optional(),
+  })
+  .refine((v) => Boolean(v.organizationSlug?.trim() || v.organizationId?.trim()), {
+    message: "organizationSlug or organizationId is required",
+    path: ["organizationSlug"],
+  });
 
 const setPasswordSchema = z.object({
   currentPassword: z.string().min(1),
   newPassword: customerPasswordSchema,
 });
 
-/** POST /api/auth/customer/login */
+/** POST /api/auth/customer/login — tenant-scoped (slug or organizationId required). */
 export async function postCustomerLogin(req: Request, res: Response, next: NextFunction) {
   try {
     const body = loginSchema.parse(req.body);
-    const customer = await authenticateCustomer(body.phone, body.password);
+    let organizationId = body.organizationId?.trim() || "";
+    if (body.organizationSlug?.trim()) {
+      const org = await getOrganizationBySlug(body.organizationSlug.trim());
+      if (!org.isActive) {
+        res.status(403).json({ data: null, error: { message: "This organization is inactive." } });
+        return;
+      }
+      organizationId = org.id;
+    }
+    if (!organizationId) {
+      res.status(400).json({
+        data: null,
+        error: { message: "organizationSlug or organizationId is required" },
+      });
+      return;
+    }
+
+    const customer = await authenticateCustomer(body.phone, body.password, organizationId);
     if (!customer) {
+      res.status(401).json({ data: null, error: { message: "Invalid phone or password" } });
+      return;
+    }
+    if (customer.organizationId !== organizationId) {
       res.status(401).json({ data: null, error: { message: "Invalid phone or password" } });
       return;
     }

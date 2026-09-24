@@ -1,5 +1,5 @@
 import { prisma } from "../../lib/prisma.js";
-import { SINGLETON_ENTITY_ID } from "../../constants/json-collections.js";
+import { SINGLETON_ENTITY_ID, singletonStorageEntityId } from "../../constants/json-collections.js";
 import { listBranchesApi } from "../branches/branch-api.service.js";
 import { getEntitlementForOrg } from "../organization/organization-subscription.service.js";
 import {
@@ -37,9 +37,13 @@ async function loadBranding(organizationId?: string): Promise<BrandingPayload> {
       ? await prisma.appJsonRow.findFirst({
           where: {
             collection: "appSettings",
-            entityId: SINGLETON_ENTITY_ID,
             organizationId,
+            OR: [
+              { entityId: singletonStorageEntityId(organizationId) },
+              { entityId: SINGLETON_ENTITY_ID },
+            ],
           },
+          orderBy: { updatedAt: "desc" },
           select: { payload: true },
         })
       : await prisma.appJsonRow.findUnique({

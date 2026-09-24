@@ -56,3 +56,23 @@ export function isArrayCollection(name: string): name is ArrayJsonCollection {
 export function isSingletonCollection(name: string): name is SingletonCollection {
   return (SINGLETON_COLLECTIONS as readonly string[]).includes(name);
 }
+
+/**
+ * Physical AppJsonRow.entityId for singleton documents.
+ * PK is global (collection, entityId), so "default" cannot be shared across orgs.
+ * API still uses logical id "default"; storage uses `{organizationId}::default`.
+ */
+export function singletonStorageEntityId(organizationId: string): string {
+  return `${organizationId}::${SINGLETON_ENTITY_ID}`;
+}
+
+export function isSingletonStorageEntityIdForOrg(
+  entityId: string,
+  organizationId: string
+): boolean {
+  return (
+    entityId === singletonStorageEntityId(organizationId) ||
+    entityId === SINGLETON_ENTITY_ID
+  );
+}
+

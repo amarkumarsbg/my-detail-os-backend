@@ -29,6 +29,8 @@ import {
   getPlatformMessagingStatus,
   suspendOrganization,
   restoreOrganization,
+  postPlatformProvisionOrganization,
+  postPlatformConvertTrial,
 } from "./platform.controller.js";
 
 export const platformRouter = Router();
@@ -42,10 +44,13 @@ platformRouter.get("/branches", listPlatformBranches);
 
 // Existing org endpoints
 platformRouter.get("/organizations", listPlatformOrganizations);
+// Static path must be registered before :orgId
+platformRouter.post("/organizations/provision", postPlatformProvisionOrganization);
 platformRouter.get("/organizations/:orgId", getPlatformOrganization);
 platformRouter.patch("/organizations/:orgId/subscription", patchPlatformOrganizationSubscription);
 platformRouter.post("/organizations/:orgId/subscription/verify-payment", postPlatformVerifyPayment);
 platformRouter.post("/organizations/:orgId/subscription/mark-paid", postPlatformMarkPaid);
+platformRouter.post("/organizations/:orgId/subscription/convert-trial", postPlatformConvertTrial);
 
 // Suspend / restore
 platformRouter.post("/organizations/:orgId/suspend", suspendOrganization);

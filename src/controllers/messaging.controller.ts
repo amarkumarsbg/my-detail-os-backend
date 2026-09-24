@@ -214,10 +214,10 @@ const testPhoneSchema = z.object({
 });
 
 const TEST_SMS_BODY =
-  "Prime Detailers — test SMS. If you received this, Twilio SMS is working. Replies are not monitored.";
+  "MY DETAIL OS — test SMS. If you received this, Twilio SMS is working. Replies are not monitored.";
 
 const TEST_WHATSAPP_BODY =
-  "Prime Detailers — test WhatsApp. If you received this, Twilio WhatsApp is working. Replies are not monitored.";
+  "MY DETAIL OS — test WhatsApp. If you received this, Twilio WhatsApp is working. Replies are not monitored.";
 
 /** Authenticated smoke test for transactional SMS (Twilio). */
 export async function postSmsTest(req: Request, res: Response, next: NextFunction) {

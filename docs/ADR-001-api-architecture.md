@@ -2,7 +2,7 @@
 
 **Status:** Accepted (Phase 0 — documentation only)  
 **Date:** 2026-08-17  
-**Context:** Prime Detailers Express API (`backend/`)
+**Context:** MY DETAIL OS Express API (`backend/`)
 
 ## Decision
 

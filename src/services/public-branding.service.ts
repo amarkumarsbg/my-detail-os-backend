@@ -1,5 +1,7 @@
 import { prisma } from "../lib/prisma.js";
 import { SINGLETON_ENTITY_ID } from "../constants/json-collections.js";
+import { PLATFORM_BRAND_NAME } from "../constants/platform-brand.js";
+import { getTenantPublicBranding } from "./organization-public.service.js";
 
 export type PublicLoginHeroFeature = {
   title: string;
@@ -14,6 +16,11 @@ export type PublicBranding = {
   loginHeroHeading: string;
   loginHeroDescription: string;
   loginHeroFeatures: PublicLoginHeroFeature[];
+  /** Present when resolved via organization slug. */
+  organizationId?: string;
+  organizationSlug?: string;
+  isActive?: boolean;
+  subscriptionStatus?: string | null;
 };
 
 const DEFAULT_HEADING = "Manage your business smarter, not harder.";
@@ -35,9 +42,9 @@ const DEFAULT_FEATURES: PublicLoginHeroFeature[] = [
 ];
 
 const DEFAULTS: PublicBranding = {
-  businessName: "Prime Detailers",
+  businessName: PLATFORM_BRAND_NAME,
   businessLogo: "",
-  brandPrimary: "#3B82F6",
+  brandPrimary: "#0D9488",
   loginBackgroundImage: "",
   loginHeroHeading: DEFAULT_HEADING,
   loginHeroDescription: DEFAULT_DESCRIPTION,
@@ -63,10 +70,32 @@ function normalizeFeatures(raw: unknown): PublicLoginHeroFeature[] | null {
 /**
  * Safe subset of appSettings for the unauthenticated login / splash surface.
  * Never expose bank, GSTIN, or other sensitive profile fields.
+ *
+ * Pass `slug` to resolve organization-scoped branding (tenant login).
+ * Without slug, returns platform-level defaults (legacy global singleton).
  */
-export async function getPublicBranding(): Promise<PublicBranding> {
+export async function getPublicBranding(slug?: string | null): Promise<PublicBranding> {
+  const trimmed = typeof slug === "string" ? slug.trim() : "";
+  if (trimmed) {
+    const tenant = await getTenantPublicBranding(trimmed);
+    return {
+      businessName: tenant.businessName,
+      businessLogo: tenant.businessLogo,
+      brandPrimary: tenant.brandPrimary,
+      loginBackgroundImage: tenant.loginBackgroundImage,
+      loginHeroHeading: tenant.loginHeroHeading,
+      loginHeroDescription: tenant.loginHeroDescription,
+      loginHeroFeatures: DEFAULT_FEATURES,
+      organizationId: tenant.organizationId,
+      organizationSlug: tenant.organizationSlug,
+      isActive: tenant.isActive,
+      subscriptionStatus: tenant.subscriptionStatus,
+    };
+  }
+
   const row = await prisma.appJsonRow.findUnique({
     where: { collection_entityId: { collection: "appSettings", entityId: SINGLETON_ENTITY_ID } },
+    select: { payload: true },
   });
   const raw = (row?.payload ?? {}) as Record<string, unknown>;
   const str = (k: string) => (typeof raw[k] === "string" ? (raw[k] as string) : "");

@@ -17,7 +17,12 @@ import { z } from "zod";
 import type { Prisma, UserRole } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
 import { AppHttpError } from "../../lib/app-http-error.js";
+import { strongPasswordSchema } from "../../lib/password-policy.js";
 import { writePlatformAuditLog } from "../../lib/platform-audit.js";
+import {
+  convertTrialSubscription,
+  provisionOrganization,
+} from "../organization/organization-provision.service.js";
 import { env } from "../../config/env.js";
 import { normalizePlanCode, parseAllowedTerms, parsePlanLimits } from "../../lib/plan-catalog.js";
 import type { SubscriptionPricingPatch } from "../../lib/subscription-pricing.js";
@@ -1277,6 +1282,75 @@ export async function restoreOrganization(req: Request, res: Response, next: Nex
     });
 
     res.json({ data: { restored: true }, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+
+// ─── POST /api/platform/organizations/provision ──────────────────────────────
+
+const provisionSchema = z.object({
+  businessName: z.string().min(1).max(160),
+  ownerName: z.string().min(1).max(120),
+  email: z.string().email(),
+  phone: z.string().min(7).max(20),
+  password: strongPasswordSchema,
+  branchName: z.string().min(1).max(120).optional(),
+  planCode: z.string().min(2).max(24).optional(),
+  referralCode: z.string().max(32).nullable().optional(),
+  trialDays: z.number().int().min(1).max(90).optional(),
+  source: z.string().max(80).optional(),
+});
+
+export async function postPlatformProvisionOrganization(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const body = provisionSchema.parse(req.body ?? {});
+    const actor = actorFromReq(req);
+    const result = await provisionOrganization({
+      ...body,
+      actor,
+      source: body.source ?? "platform_admin",
+    });
+    res.status(201).json({ data: result, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// ─── POST /api/platform/organizations/:orgId/subscription/convert-trial ───────
+
+const convertTrialSchema = z.object({
+  termMonths: z
+    .union([z.literal(1), z.literal(3), z.literal(12), z.literal(24), z.literal(36), z.literal(60)])
+    .optional(),
+  planCode: z.string().min(2).max(24).optional(),
+  markPaid: z.boolean().optional(),
+  notes: z.string().max(500).optional(),
+});
+
+export async function postPlatformConvertTrial(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const orgId = String(req.params["orgId"] ?? "");
+    if (!orgId) throw new AppHttpError(400, "orgId is required.", "MISSING_PARAM");
+    const body = convertTrialSchema.parse(req.body ?? {});
+    const result = await convertTrialSubscription({
+      organizationId: orgId,
+      actor: actorFromReq(req),
+      termMonths: body.termMonths,
+      planCode: body.planCode,
+      markPaid: body.markPaid,
+      notes: body.notes,
+    });
+    res.json({ data: result, error: null });
   } catch (e) {
     next(e);
   }
