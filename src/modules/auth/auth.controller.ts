@@ -3,6 +3,7 @@ import type { Branch, User } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
+import { ensureOrganizationHasSlug } from "../../lib/ensure-organization-slug.js";
 import { authenticateUser, signAuthToken, touchUserLastLogin } from "./auth.service.js";
 import {
   consumeLoginOtpIfValid,
@@ -126,13 +127,9 @@ async function authSuccessResponse(user: User, branch: Branch | null) {
     mustChangePassword: user.mustChangePassword === true,
     permissions: user.permissions,
   });
-  let organization: { id: string; name: string; slug: string | null } | null = null;
+  let organization: { id: string; name: string; slug: string } | null = null;
   if (user.organizationId) {
-    const org = await prisma.organization.findUnique({
-      where: { id: user.organizationId },
-      select: { id: true, name: true, slug: true },
-    });
-    if (org) organization = org;
+    organization = await ensureOrganizationHasSlug(user.organizationId);
   }
   return {
     accessToken: token,
