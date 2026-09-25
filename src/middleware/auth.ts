@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { env } from "../config/env.js";
+import { prisma } from "../lib/prisma.js";
 import type { UserRole } from "@prisma/client";
 import {
   granularPermissionKey,
@@ -32,6 +33,49 @@ declare global {
   }
 }
 
+/** Skip org-suspension gate for vendor platform operators. */
+function isPlatformBypassRole(role: AppRole): boolean {
+  return role === "PLATFORM_OWNER";
+}
+
+/**
+ * After JWT is valid, block studio/customer access when the org was suspended
+ * (isActive=false or subscription CANCELLED). Without this, an existing tab
+ * keeps working until a hard refresh because the JWT is still valid.
+ */
+async function assertOrganizationAccess(
+  req: Request,
+  auth: AuthUser
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (isPlatformBypassRole(auth.role)) return { ok: true };
+
+  // Always allow logout so a suspended session can clear itself.
+  const path = (req.originalUrl || req.path || "").split("?")[0] ?? "";
+  if (path === "/api/auth/logout" || path.endsWith("/auth/logout")) return { ok: true };
+
+  const orgId = auth.organizationId?.trim();
+  if (!orgId) return { ok: true };
+
+  const org = await prisma.organization.findUnique({
+    where: { id: orgId },
+    select: {
+      isActive: true,
+      subscription: { select: { status: true } },
+    },
+  });
+
+  if (!org) {
+    return { ok: false, message: "Organization not found." };
+  }
+  if (!org.isActive || org.subscription?.status === "CANCELLED") {
+    return {
+      ok: false,
+      message: "This workshop has been suspended. Contact support to restore access.",
+    };
+  }
+  return { ok: true };
+}
+
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   const header = req.headers.authorization;
   const token = header?.startsWith("Bearer ") ? header.slice(7) : null;
@@ -60,7 +104,17 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
       name: decoded.name,
       permissions: decoded.permissions || [],
     };
-    next();
+
+    void assertOrganizationAccess(req, req.auth).then((result) => {
+      if (!result.ok) {
+        res.status(403).json({
+          data: null,
+          error: { message: result.message, code: "ORG_SUSPENDED" },
+        });
+        return;
+      }
+      next();
+    }).catch(next);
   } catch {
     res.status(401).json({ data: null, error: { message: "Invalid or expired token" } });
   }
