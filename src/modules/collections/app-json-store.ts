@@ -13,6 +13,7 @@ import {
 } from "../../constants/json-collections.js";
 import { applyCollectionBranchScope } from "../../lib/data-scope.js";
 import { AppError } from "../../lib/app-error.js";
+import { normalizeActivityLogPayload } from "../../services/activity-logger.service.js";
 
 function isPickupDropWriteBlocked(): boolean {
   const raw = process.env.BLOCK_PICKUP_DROP_WRITES?.trim().toLowerCase();
@@ -23,6 +24,22 @@ function assertCollectionWriteAllowed(collection: string): void {
   if (collection !== "pickupDropRequests") return;
   if (!isPickupDropWriteBlocked()) return;
   throw AppError.forbidden("Pickup/Drop writes are temporarily blocked.");
+}
+
+/** Merge entityId into payload; normalize activityLogs to frontend ActivityLog shape. */
+function mapListedPayload(collection: string, entityId: string, payload: unknown): unknown {
+  if (!payload || typeof payload !== "object") {
+    return collection === "activityLogs"
+      ? normalizeActivityLogPayload({}, entityId)
+      : payload;
+  }
+  if (collection === "activityLogs") {
+    return normalizeActivityLogPayload(
+      { id: entityId, ...(payload as Record<string, unknown>) },
+      entityId
+    );
+  }
+  return { id: entityId, ...(payload as Record<string, unknown>) };
 }
 
 /**
@@ -131,7 +148,9 @@ export async function listCollectionItems(
     // total count and page data in one DB round-trip (critical for high-latency remote DBs).
     // stripPayloadFields removes large embedded fields (e.g. base64 PDFs) at DB level
     // to minimise network transfer.
-    const needsBranchFilter = Array.isArray(opts.allowedBranchIds) && opts.allowedBranchIds.length >= 0;
+    // Empty arrays still need branch filtering (caller restricted to no branches).
+    // Only skip the fast path when a non-null branch allow-list is present.
+    const needsBranchFilter = Array.isArray(opts.allowedBranchIds);
     if (opts.page && opts.pageSize && !needsBranchFilter) {
       const skip = (opts.page - 1) * opts.pageSize;
       const orgFilter = opts.organizationId
@@ -159,7 +178,7 @@ export async function listCollectionItems(
       `;
       const total = rows.length > 0 ? Number(rows[0]!.total_count) : 0;
       return {
-        items: rows.map((r) => ({ id: r.entityId, ...(r.payload as object) })),
+        items: rows.map((r) => mapListedPayload(collection, r.entityId, r.payload)),
         page: opts.page,
         pageSize: opts.pageSize,
         total,
@@ -175,13 +194,14 @@ export async function listCollectionItems(
       select: { payload: true, entityId: true },
     });
     items = rows.map((r) => {
+      const mapped = mapListedPayload(collection, r.entityId, r.payload);
       // Apply stripPayloadFields in Node for the general (non-fast) path.
-      if (opts.stripPayloadFields?.length && r.payload && typeof r.payload === "object") {
-        const copy = { id: r.entityId, ...(r.payload as Record<string, unknown>) } as Record<string, unknown>;
+      if (opts.stripPayloadFields?.length && mapped && typeof mapped === "object") {
+        const copy = { ...(mapped as Record<string, unknown>) };
         for (const f of opts.stripPayloadFields) delete copy[f];
         return copy;
       }
-      return r.payload && typeof r.payload === "object" ? { id: r.entityId, ...(r.payload as Record<string, unknown>) } : r.payload;
+      return mapped;
     });
     // Data is already ordered by createdAt DESC from DB; sortCollectionPayloads re-sorts
     // only when the collection uses a non-createdAt primary sort field (e.g. appointments by date).

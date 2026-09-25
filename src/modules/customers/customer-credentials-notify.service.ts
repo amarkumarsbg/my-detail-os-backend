@@ -10,6 +10,7 @@ import { env } from "../../config/env.js";
 import { isTwilioWhatsAppEnabled, sendWhatsAppMessage } from "../../services/twilio-sms.service.js";
 import { buildCustomerCredentialsWhatsAppMessage } from "../../lib/customer-credentials-whatsapp.js";
 import { upsertCollectionItem } from "../collections/app-json-store.js";
+import { ensureOrganizationHasSlug } from "../../lib/ensure-organization-slug.js";
 
 async function resolveBusinessName(organizationId: string): Promise<string> {
   const row = await prisma.appJsonRow.findFirst({
@@ -67,6 +68,15 @@ function primaryFrontendOrigin(): string {
   return first.replace(/\/$/, "");
 }
 
+/** Tenant-aware customer portal login URL: /{orgSlug}/customer/login */
+async function resolveCustomerPortalLoginUrl(organizationId: string): Promise<string> {
+  const origin = primaryFrontendOrigin();
+  const org = await ensureOrganizationHasSlug(organizationId);
+  const slug = org?.slug?.trim().toLowerCase();
+  if (slug) return `${origin}/${slug}/customer/login`;
+  return `${origin}/customer/login`;
+}
+
 /** Awaited by the caller so the API response can report whether the send succeeded. */
 export async function sendCustomerCredentialsWhatsApp(opts: {
   organizationId: string;
@@ -76,7 +86,7 @@ export async function sendCustomerCredentialsWhatsApp(opts: {
   plainPassword: string;
 }): Promise<SendCustomerCredentialsResult> {
   const businessName = await resolveBusinessName(opts.organizationId);
-  const customerPortalUrl = `${primaryFrontendOrigin()}/customer/login`;
+  const customerPortalUrl = await resolveCustomerPortalLoginUrl(opts.organizationId);
   const message = buildCustomerCredentialsWhatsAppMessage({
     firstName: opts.customerName,
     phone: opts.phone,

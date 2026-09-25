@@ -36,6 +36,7 @@ import {
   getUserReportFavourites,
   setUserReportFavourites,
 } from "./report-favourites.service.js";
+import { logAuthActivity } from "../../services/activity-logger.service.js";
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -267,6 +268,13 @@ export async function verifyLoginOtp(req: Request, res: Response, next: NextFunc
     }
     await touchUserLastLogin(user.id);
     const branch = await prisma.branch.findUnique({ where: { id: user.branchId } });
+    void logAuthActivity({
+      organizationId: user.organizationId,
+      userId: user.id,
+      userName: user.name,
+      action: "LOGIN",
+      method: "otp",
+    });
     res.json({ data: await authSuccessResponse(user, branch), error: null });
   } catch (e) {
     next(e);
@@ -281,8 +289,33 @@ export async function login(req: Request, res: Response, next: NextFunction) {
       res.status(401).json({ data: null, error: { message: "Invalid email or password" } });
       return;
     }
+    void logAuthActivity({
+      organizationId: result.user.organizationId,
+      userId: result.user.id,
+      userName: result.user.name,
+      action: "LOGIN",
+      method: "password",
+    });
     // user + branch are returned together; branch lookup ran in parallel with bcrypt.
     res.json({ data: await authSuccessResponse(result.user, result.branch), error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+/** POST /api/auth/logout — stateless JWT; records activity then client discards the token. */
+export async function logout(req: Request, res: Response, next: NextFunction) {
+  try {
+    const auth = req.auth;
+    if (auth?.id && auth.organizationId) {
+      void logAuthActivity({
+        organizationId: auth.organizationId,
+        userId: auth.id,
+        userName: auth.name || "Staff",
+        action: "LOGOUT",
+      });
+    }
+    res.json({ data: { ok: true as const }, error: null });
   } catch (e) {
     next(e);
   }

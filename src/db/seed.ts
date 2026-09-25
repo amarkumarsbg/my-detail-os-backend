@@ -439,12 +439,22 @@ async function main() {
         item.branchId && !seedBranches.some((b) => b.id === item.branchId)
           ? { ...item, branchId: primaryBranchId }
           : item;
+      let rowCreatedAt: Date | undefined;
+      const rawCreated =
+        payload && typeof payload === "object"
+          ? (payload as { createdAt?: unknown }).createdAt
+          : undefined;
+      if (typeof rawCreated === "string" && rawCreated) {
+        const t = new Date(rawCreated);
+        if (!Number.isNaN(t.getTime())) rowCreatedAt = t;
+      }
       await prisma.appJsonRow.create({
         data: {
           collection: name,
           entityId: item.id,
           organizationId: orgId,
           payload: payload as object,
+          ...(rowCreatedAt ? { createdAt: rowCreatedAt } : {}),
         },
       });
     }

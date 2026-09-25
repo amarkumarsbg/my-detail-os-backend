@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   login,
+  logout,
   me,
   patchMe,
   uploadMyAvatar,
@@ -19,6 +20,7 @@ import { avatarUploadHandler } from "../../middleware/avatar-upload.js";
 export const authRouter = Router();
 
 authRouter.post("/login", login);
+authRouter.post("/logout", requireAuth, logout);
 authRouter.post("/change-password", requireAuth, changePassword);
 authRouter.post("/forgot-password", forgotPassword);
 authRouter.get("/reset-password/status", getResetPasswordTokenStatus);

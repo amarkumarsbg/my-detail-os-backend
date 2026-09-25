@@ -618,11 +618,11 @@ export async function listPlatformOrganizationActivity(
 
     const total = rows.length > 0 ? Number(rows[0]!.total_count) : 0;
 
+    const { normalizeActivityLogPayload } = await import(
+      "../../services/activity-logger.service.js"
+    );
     const activities = rows.map((r) => {
-      const p =
-        r.payload && typeof r.payload === "object" && !Array.isArray(r.payload)
-          ? (r.payload as Record<string, unknown>)
-          : {};
+      const p = normalizeActivityLogPayload(r.payload, r.entityId);
       const createdAtRaw =
         typeof p.createdAt === "string"
           ? p.createdAt
@@ -1229,18 +1229,31 @@ export async function suspendOrganization(req: Request, res: Response, next: Nex
       throw new AppHttpError(409, "Subscription is already suspended/cancelled.", "ALREADY_SUSPENDED");
     }
 
-    const before = { status: sub.status };
-    await prisma.organizationSubscription.update({
-      where: { organizationId: orgId },
-      data: { status: "CANCELLED" },
+    const org = await prisma.organization.findUnique({
+      where: { id: orgId },
+      select: { isActive: true },
     });
+    if (!org) throw new AppHttpError(404, "Organization not found.", "NOT_FOUND");
+
+    const before = { status: sub.status, isActive: org.isActive };
+    await prisma.$transaction([
+      prisma.organizationSubscription.update({
+        where: { organizationId: orgId },
+        data: { status: "CANCELLED" },
+      }),
+      // Restrict workshop access (TenantGuard blocks inactive orgs).
+      prisma.organization.update({
+        where: { id: orgId },
+        data: { isActive: false },
+      }),
+    ]);
 
     await writePlatformAuditLog({
       organizationId: orgId,
       actor,
       action: "subscription.suspended",
       before,
-      after: { status: "CANCELLED", reason: body.reason },
+      after: { status: "CANCELLED", isActive: false, reason: body.reason },
     });
 
     res.json({ data: { suspended: true, reason: body.reason }, error: null });
@@ -1267,18 +1280,34 @@ export async function restoreOrganization(req: Request, res: Response, next: Nex
     });
     if (!sub) throw new AppHttpError(404, "Organization subscription not found.", "NOT_FOUND");
 
-    const before = { status: sub.status };
-    await prisma.organizationSubscription.update({
-      where: { organizationId: orgId },
-      data: { status: "ACTIVE" },
+    const org = await prisma.organization.findUnique({
+      where: { id: orgId },
+      select: { isActive: true },
     });
+    if (!org) throw new AppHttpError(404, "Organization not found.", "NOT_FOUND");
+
+    const before = { status: sub.status, isActive: org.isActive };
+    await prisma.$transaction([
+      prisma.organizationSubscription.update({
+        where: { organizationId: orgId },
+        data: { status: "ACTIVE" },
+      }),
+      prisma.organization.update({
+        where: { id: orgId },
+        data: { isActive: true },
+      }),
+    ]);
 
     await writePlatformAuditLog({
       organizationId: orgId,
       actor,
       action: "subscription.restored",
       before,
-      after: { status: "ACTIVE", reason: body.reason ?? "Restored by platform admin" },
+      after: {
+        status: "ACTIVE",
+        isActive: true,
+        reason: body.reason ?? "Restored by platform admin",
+      },
     });
 
     res.json({ data: { restored: true }, error: null });

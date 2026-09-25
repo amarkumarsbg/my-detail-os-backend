@@ -153,7 +153,9 @@ const UPSERT_VIA_PUT_MODULES = new Set<string>([
  * - Upsert-via-PUT modules: *_CREATE also authorizes PUT/PATCH (create + workflow writes).
  */
 export function hasPermissionForMethod(auth: AuthUser, permission: string, method: string): boolean {
-  if (auth.role === "SUPER_ADMIN" || auth.role === "ADMIN") return true;
+  if (auth.role === "SUPER_ADMIN" || auth.role === "ADMIN" || auth.role === "PLATFORM_OWNER") {
+    return true;
+  }
 
   const held = auth.permissions ?? [];
   if (held.includes(permission)) return true;
