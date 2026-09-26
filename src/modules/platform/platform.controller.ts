@@ -122,7 +122,9 @@ export async function getPlatformDashboard(req: Request, res: Response, next: Ne
         _sum: { amount: true },
         _count: { _all: true },
       }),
-      prisma.subscriptionPayment.count({ where: { status: "PENDING" } }),
+      prisma.subscriptionPayment.count({
+        where: { status: { in: ["PENDING", "PROCESSING"] } },
+      }),
       prisma.platformReferralCode.count({ where: { isActive: true } }),
     ]);
 
