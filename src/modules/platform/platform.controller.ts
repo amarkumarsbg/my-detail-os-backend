@@ -10,6 +10,7 @@
  * - GET/PUT/POST /api/platform/plans (+ PATCH/DELETE /plans/:code)
  * - GET/PUT /api/platform/settings
  * - GET  /api/platform/messaging
+ * - POST /api/platform/messaging/test
  * - POST /api/platform/organizations/:orgId/suspend|restore
  */
 
@@ -39,8 +40,11 @@ import {
 import {
   isTwilioSmsEnabled,
   isTwilioWhatsAppEnabled,
+  normalizePhoneToE164,
+  sendTransactionalSms,
+  sendWhatsAppMessage,
 } from "../../services/twilio-sms.service.js";
-import { isResendConfigured } from "../../services/resend-send.js";
+import { isResendConfigured, sendViaResend } from "../../services/resend-send.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1344,6 +1348,106 @@ export async function getPlatformMessagingStatus(req: Request, res: Response, ne
       },
       error: null,
     });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// ─── POST /api/platform/messaging/test ───────────────────────────────────────
+
+const messagingTestSchema = z.discriminatedUnion("channel", [
+  z.object({
+    channel: z.literal("sms"),
+    to: z.string().min(8).max(32),
+    body: z.string().min(1).max(1600).optional(),
+  }),
+  z.object({
+    channel: z.literal("whatsapp"),
+    to: z.string().min(8).max(32),
+    body: z.string().min(1).max(1600).optional(),
+  }),
+  z.object({
+    channel: z.literal("email"),
+    to: z.string().email(),
+    subject: z.string().min(1).max(200).optional(),
+    body: z.string().min(1).max(20_000).optional(),
+  }),
+]);
+
+const DEFAULT_SMS_BODY =
+  "My Detail OS — platform test SMS. If you received this, Twilio SMS is working.";
+const DEFAULT_WHATSAPP_BODY =
+  "My Detail OS — platform test WhatsApp. If you received this, Twilio WhatsApp is working.";
+const DEFAULT_EMAIL_SUBJECT = "My Detail OS — platform test email";
+const DEFAULT_EMAIL_BODY =
+  "<p>My Detail OS platform test email.</p><p>If you received this, Resend email is working.</p>";
+
+export async function postPlatformMessagingTest(req: Request, res: Response, next: NextFunction) {
+  try {
+    const body = messagingTestSchema.parse(req.body ?? {});
+    const actor = actorFromReq(req);
+
+    if (body.channel === "sms") {
+      if (!isTwilioSmsEnabled()) {
+        throw new AppHttpError(503, "SMS is not configured on the API server.", "SMS_NOT_CONFIGURED");
+      }
+      const to = normalizePhoneToE164(body.to);
+      const text = body.body?.trim() || DEFAULT_SMS_BODY;
+      await sendTransactionalSms(to, text);
+      await writePlatformAuditLog({
+        organizationId: null,
+        actor,
+        action: "messaging.test_sms",
+        before: null,
+        after: { to, preview: text.slice(0, 120) },
+      });
+      res.json({ data: { ok: true, channel: "sms", to }, error: null });
+      return;
+    }
+
+    if (body.channel === "whatsapp") {
+      if (!isTwilioWhatsAppEnabled()) {
+        throw new AppHttpError(
+          503,
+          "WhatsApp is not configured on the API server.",
+          "WHATSAPP_NOT_CONFIGURED"
+        );
+      }
+      const text = body.body?.trim() || DEFAULT_WHATSAPP_BODY;
+      await sendWhatsAppMessage(body.to, text);
+      await writePlatformAuditLog({
+        organizationId: null,
+        actor,
+        action: "messaging.test_whatsapp",
+        before: null,
+        after: { to: body.to, preview: text.slice(0, 120) },
+      });
+      res.json({ data: { ok: true, channel: "whatsapp", to: body.to }, error: null });
+      return;
+    }
+
+    if (!isResendConfigured()) {
+      throw new AppHttpError(503, "Email is not configured on the API server.", "EMAIL_NOT_CONFIGURED");
+    }
+    const subject = body.subject?.trim() || DEFAULT_EMAIL_SUBJECT;
+    const html = body.body?.trim() || DEFAULT_EMAIL_BODY;
+    const out = await sendViaResend({
+      to: [body.to],
+      subject,
+      html,
+      text: html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
+    });
+    if (!out.ok) {
+      throw new AppHttpError(502, out.detail, "EMAIL_SEND_FAILED");
+    }
+    await writePlatformAuditLog({
+      organizationId: null,
+      actor,
+      action: "messaging.test_email",
+      before: null,
+      after: { to: body.to, subject },
+    });
+    res.json({ data: { ok: true, channel: "email", to: body.to }, error: null });
   } catch (e) {
     next(e);
   }

@@ -1047,6 +1047,12 @@ export async function verifySubscriptionPayment(
       },
     });
 
+    // Accepting payment reactivates workshop access (no separate Restore needed).
+    await tx.organization.update({
+      where: { id: orgId },
+      data: { isActive: true },
+    });
+
     await tx.subscriptionBill.create({
       data: {
         organizationId: orgId,
@@ -1081,6 +1087,7 @@ export async function verifySubscriptionPayment(
         before: {
           expiresAt: currentEnd?.toISOString() ?? null,
           paymentStatus: sub.paymentStatus,
+          isActive: org.isActive,
         },
         after: {
           expiresAt: periodEnd.toISOString(),
@@ -1089,28 +1096,33 @@ export async function verifySubscriptionPayment(
           txnReference: txnRef,
           termMonths,
           finalAmount,
+          isActive: true,
         },
       },
     });
   });
 
   const usage = await usageForOrg(orgId);
-  const updated = await prisma.organizationSubscription.findUniqueOrThrow({
-    where: { organizationId: orgId },
-  });
-  return toEntitlement(org, updated, usage.branchesUsed, usage.usersUsed);
+  const [updatedOrg, updated] = await Promise.all([
+    prisma.organization.findUniqueOrThrow({ where: { id: orgId } }),
+    prisma.organizationSubscription.findUniqueOrThrow({
+      where: { organizationId: orgId },
+    }),
+  ]);
+  return toEntitlement(updatedOrg, updated, usage.branchesUsed, usage.usersUsed);
 }
 
 /**
  * Admin shortcut: mark a subscription paid.
  *
- * Reuses the most recent PENDING renewal payment (created by
- * `requestSubscriptionRenewal`) when one exists, so its pricing breakdown —
- * extraBranches/extraUsers/termMonths — carries through to verification and
- * correctly raises `maxBranchesOverride`/`maxUsersOverride`. Previously this
- * always created a brand-new context-less payment, which silently discarded
- * any extras purchased in the renewal request (bug).
- * Falls back to creating a fresh payment when there's no pending renewal
+ * Reuses the most recent open renewal payment (PENDING first, then PROCESSING)
+ * when one exists, so its pricing breakdown — extraBranches/extraUsers/termMonths —
+ * carries through to verification and correctly raises
+ * `maxBranchesOverride`/`maxUsersOverride`. Previously this always created a
+ * brand-new context-less payment, which silently discarded any extras purchased
+ * in the renewal request (bug). Also reuses orphan PROCESSING rows left by a
+ * prior mid-flight mark-paid instead of stacking another payment.
+ * Falls back to creating a fresh payment when there's no open renewal
  * (e.g. an ad-hoc admin "mark paid" without a prior renewal request).
  */
 export async function adminMarkSubscriptionPaid(
@@ -1135,9 +1147,16 @@ export async function adminMarkSubscriptionPaid(
     where: { organizationId: orgId, status: "PENDING" },
     orderBy: { createdAt: "desc" },
   });
+  const processingPayment = !pendingPayment
+    ? await prisma.subscriptionPayment.findFirst({
+        where: { organizationId: orgId, status: "PROCESSING" },
+        orderBy: { createdAt: "desc" },
+      })
+    : null;
+  const openPayment = pendingPayment ?? processingPayment;
 
-  const paymentId = pendingPayment
-    ? pendingPayment.id
+  const paymentId = openPayment
+    ? openPayment.id
     : (
         await prisma.subscriptionPayment.create({
           data: {

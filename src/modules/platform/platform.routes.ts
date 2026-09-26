@@ -28,6 +28,7 @@ import {
   getPlatformSettingsHandler,
   putPlatformSettingsHandler,
   getPlatformMessagingStatus,
+  postPlatformMessagingTest,
   suspendOrganization,
   restoreOrganization,
   postPlatformProvisionOrganization,
@@ -78,3 +79,4 @@ platformRouter.get("/settings", getPlatformSettingsHandler);
 platformRouter.put("/settings", putPlatformSettingsHandler);
 
 platformRouter.get("/messaging", getPlatformMessagingStatus);
+platformRouter.post("/messaging/test", postPlatformMessagingTest);
