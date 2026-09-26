@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { calculateSubscriptionPricing } from "../lib/subscription-pricing.js";
 import {
   getEffectivePlanCatalogFromDb,
+  getPlatformSettings,
   getResolvedSubscriptionPricing,
 } from "../lib/platform-settings.js";
 import { isAllowedTerm } from "../lib/plan-catalog.js";
@@ -293,9 +294,10 @@ export async function postPublicPricingQuote(req: Request, res: Response, next: 
 
 export async function getPublicPlans(_req: Request, res: Response, next: NextFunction) {
   try {
-    const [catalog, pricing] = await Promise.all([
+    const [catalog, pricing, settings] = await Promise.all([
       getEffectivePlanCatalogFromDb(),
       getResolvedSubscriptionPricing(),
+      getPlatformSettings(),
     ]);
     const plans = catalog
       .filter((p) => p.publicVisible)
@@ -314,6 +316,7 @@ export async function getPublicPlans(_req: Request, res: Response, next: NextFun
     res.json({
       data: {
         plans,
+        trialDaysDefault: settings.trialDaysDefault,
         pricing: {
           currency: pricing.currency,
           gstPercent: pricing.gstPercent,
