@@ -1629,3 +1629,67 @@ export async function postPlatformConvertTrial(
     next(e);
   }
 }
+
+// ─── GET /api/platform/contacts ───────────────────────────────────────────────
+
+export async function listPlatformContacts(req: Request, res: Response, next: NextFunction) {
+  try {
+    const q = req.query as Record<string, unknown>;
+    const take = Math.min(Math.max(Number(q.limit) || 100, 1), 500);
+    const search = typeof q.search === "string" ? q.search.trim().toLowerCase() : "";
+
+    const rows = await prisma.appJsonRow.findMany({
+      where: { collection: "publicContacts" },
+      orderBy: { createdAt: "desc" },
+      take: search ? 500 : take,
+    });
+
+    type ContactPayload = {
+      id?: string;
+      name?: string;
+      email?: string;
+      phone?: string;
+      businessName?: string;
+      subject?: string;
+      message?: string;
+      source?: string;
+      createdAt?: string;
+      ip?: string;
+      userAgent?: string | null;
+    };
+
+    let contacts = rows.map((row) => {
+      const payload = (row.payload ?? {}) as ContactPayload;
+      return {
+        id: payload.id ?? row.entityId,
+        name: payload.name ?? "",
+        email: payload.email ?? null,
+        phone: payload.phone ?? null,
+        businessName: payload.businessName ?? null,
+        subject: payload.subject ?? null,
+        message: payload.message ?? "",
+        source: payload.source ?? null,
+        createdAt: payload.createdAt ?? row.createdAt.toISOString(),
+        ip: payload.ip ?? null,
+        userAgent: payload.userAgent ?? null,
+      };
+    });
+
+    if (search) {
+      contacts = contacts.filter((c) => {
+        const hay = [c.name, c.email, c.phone, c.businessName, c.message, c.source]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(search);
+      });
+    }
+
+    const total = contacts.length;
+    if (search) contacts = contacts.slice(0, take);
+
+    res.json({ data: { contacts, total }, error: null });
+  } catch (e) {
+    next(e);
+  }
+}

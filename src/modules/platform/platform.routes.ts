@@ -33,6 +33,7 @@ import {
   restoreOrganization,
   postPlatformProvisionOrganization,
   postPlatformConvertTrial,
+  listPlatformContacts,
 } from "./platform.controller.js";
 
 export const platformRouter = Router();
@@ -80,3 +81,5 @@ platformRouter.put("/settings", putPlatformSettingsHandler);
 
 platformRouter.get("/messaging", getPlatformMessagingStatus);
 platformRouter.post("/messaging/test", postPlatformMessagingTest);
+
+platformRouter.get("/contacts", listPlatformContacts);
