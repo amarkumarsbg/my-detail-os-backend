@@ -232,26 +232,32 @@ export async function listBranchesApi(organizationId?: string | null) {
   return rows.map(toApiBranch);
 }
 
-export async function upsertBranchApi(data: {
-  id: string;
-  name: string;
-  address: string;
-  phone: string;
-  isActive?: boolean;
-  qrCodeId?: string | null;
-  code?: string | null;
-  city?: string | null;
-  state?: string | null;
-  pincode?: string | null;
-  email?: string | null;
-  managerName?: string | null;
-  managerPhone?: string | null;
-  /** Creator's org when available; otherwise resolved from existing tenant data. */
-  organizationId?: string | null;
-}) {
+export async function upsertBranchApi(
+  data: {
+    id: string;
+    name: string;
+    address: string;
+    phone: string;
+    isActive?: boolean;
+    qrCodeId?: string | null;
+    code?: string | null;
+    city?: string | null;
+    state?: string | null;
+    pincode?: string | null;
+    email?: string | null;
+    managerName?: string | null;
+    managerPhone?: string | null;
+    /** Creator's org when available; otherwise resolved from existing tenant data. */
+    organizationId?: string | null;
+  },
+  opts?: {
+    /** Platform admin create — bypass plan/status gate (limit may be raised separately). */
+    skipLimitCheck?: boolean;
+  }
+) {
   const organizationId = await resolveOrganizationIdForBranchCreate(data.organizationId);
   const existing = await prisma.branch.findUnique({ where: { id: data.id } });
-  if (!existing) {
+  if (!existing && !opts?.skipLimitCheck) {
     await assertCanCreateBranch(organizationId);
   }
 

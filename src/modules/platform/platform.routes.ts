@@ -11,6 +11,7 @@ import {
   getPlatformDashboard,
   listPlatformUsers,
   listPlatformBranches,
+  postPlatformOrganizationBranch,
   listPlatformRenewals,
   listPlatformBills,
   listPlatformPayments,
@@ -51,6 +52,7 @@ platformRouter.patch("/organizations/:orgId/subscription", patchPlatformOrganiza
 platformRouter.post("/organizations/:orgId/subscription/verify-payment", postPlatformVerifyPayment);
 platformRouter.post("/organizations/:orgId/subscription/mark-paid", postPlatformMarkPaid);
 platformRouter.post("/organizations/:orgId/subscription/convert-trial", postPlatformConvertTrial);
+platformRouter.post("/organizations/:orgId/branches", postPlatformOrganizationBranch);
 
 // Suspend / restore
 platformRouter.post("/organizations/:orgId/suspend", suspendOrganization);

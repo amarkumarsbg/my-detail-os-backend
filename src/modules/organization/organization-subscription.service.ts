@@ -34,8 +34,26 @@ import {
 
 export const DEFAULT_ORG_ID = "org-default";
 
+/** Org fields on workshop entitlement (lean). Platform list/detail may attach extras. */
+export type EntitlementOrganization = {
+  id: string;
+  name: string;
+  slug: string | null;
+  /** Platform admin enrichment */
+  isActive?: boolean;
+  createdAt?: string;
+  activatedAt?: string | null;
+  ownerName?: string | null;
+  ownerEmail?: string | null;
+  ownerPhone?: string | null;
+  ownerUserId?: string | null;
+  primaryBranchName?: string | null;
+  signupSource?: string | null;
+  referralCode?: string | null;
+};
+
 export type EntitlementPayload = {
-  organization: { id: string; name: string; slug: string | null };
+  organization: EntitlementOrganization;
   subscription: {
     planCode: PlanCode;
     planName: string;
@@ -277,22 +295,145 @@ export async function assertCanCreateUser(organizationId: string): Promise<Entit
   return entitlement;
 }
 
+type PlatformOrgExtras = {
+  isActive: boolean;
+  createdAt: string;
+  activatedAt: string | null;
+  ownerName: string | null;
+  ownerEmail: string | null;
+  ownerPhone: string | null;
+  ownerUserId: string | null;
+  primaryBranchName: string | null;
+  signupSource: string | null;
+  referralCode: string | null;
+};
+
+async function loadPlatformOrgExtrasMap(
+  orgIds: string[]
+): Promise<Map<string, PlatformOrgExtras>> {
+  const map = new Map<string, PlatformOrgExtras>();
+  if (orgIds.length === 0) return map;
+
+  const [owners, branches, audits] = await Promise.all([
+    prisma.user.findMany({
+      where: { organizationId: { in: orgIds }, role: "SUPER_ADMIN" },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        organizationId: true,
+      },
+      orderBy: { id: "asc" },
+    }),
+    prisma.branch.findMany({
+      where: { organizationId: { in: orgIds } },
+      select: { organizationId: true, name: true, id: true },
+      orderBy: { id: "asc" },
+    }),
+    prisma.platformAuditLog.findMany({
+      where: { organizationId: { in: orgIds }, action: "organization.provisioned" },
+      select: { organizationId: true, after: true, createdAt: true },
+      orderBy: { createdAt: "asc" },
+    }),
+  ]);
+
+  const ownerByOrg = new Map<string, (typeof owners)[number]>();
+  for (const u of owners) {
+    if (!ownerByOrg.has(u.organizationId)) ownerByOrg.set(u.organizationId, u);
+  }
+  const branchByOrg = new Map<string, (typeof branches)[number]>();
+  for (const b of branches) {
+    if (!branchByOrg.has(b.organizationId)) branchByOrg.set(b.organizationId, b);
+  }
+  const auditByOrg = new Map<string, (typeof audits)[number]>();
+  for (const a of audits) {
+    if (a.organizationId && !auditByOrg.has(a.organizationId)) {
+      auditByOrg.set(a.organizationId, a);
+    }
+  }
+
+  for (const orgId of orgIds) {
+    const owner = ownerByOrg.get(orgId);
+    const branch = branchByOrg.get(orgId);
+    const audit = auditByOrg.get(orgId);
+    const after = (audit?.after ?? null) as Record<string, unknown> | null;
+    const signupSource =
+      typeof after?.source === "string" && after.source.trim() ? after.source.trim() : null;
+    const referralCode =
+      typeof after?.referralCode === "string" && after.referralCode.trim()
+        ? after.referralCode.trim()
+        : null;
+    map.set(orgId, {
+      isActive: true, // overwritten by caller with org.isActive
+      createdAt: new Date(0).toISOString(),
+      activatedAt: null,
+      ownerName: owner?.name ?? null,
+      ownerEmail: owner?.email ?? null,
+      ownerPhone: owner?.phone ?? null,
+      ownerUserId: owner?.id ?? null,
+      primaryBranchName: branch?.name ?? null,
+      signupSource,
+      referralCode,
+    });
+  }
+  return map;
+}
+
+function withPlatformOrgExtras(
+  base: EntitlementPayload,
+  org: {
+    id: string;
+    isActive: boolean;
+    createdAt: Date;
+    activatedAt: Date | null;
+  },
+  extras: PlatformOrgExtras | undefined
+): EntitlementPayload {
+  return {
+    ...base,
+    organization: {
+      ...base.organization,
+      isActive: org.isActive,
+      createdAt: org.createdAt.toISOString(),
+      activatedAt: org.activatedAt?.toISOString() ?? null,
+      ownerName: extras?.ownerName ?? null,
+      ownerEmail: extras?.ownerEmail ?? null,
+      ownerPhone: extras?.ownerPhone ?? null,
+      ownerUserId: extras?.ownerUserId ?? null,
+      primaryBranchName: extras?.primaryBranchName ?? null,
+      signupSource: extras?.signupSource ?? null,
+      referralCode: extras?.referralCode ?? null,
+    },
+  };
+}
+
 export async function listOrganizationsForPlatform() {
   const orgs = await prisma.organization.findMany({
     orderBy: { name: "asc" },
     include: { subscription: true },
   });
-  const results = [];
-  for (const org of orgs) {
-    if (!org.subscription) continue;
+  const withSub = orgs.filter((o) => o.subscription);
+  const extrasMap = await loadPlatformOrgExtrasMap(withSub.map((o) => o.id));
+  const results: EntitlementPayload[] = [];
+  for (const org of withSub) {
     const usage = await usageForOrg(org.id);
-    results.push(toEntitlement(org, org.subscription, usage.branchesUsed, usage.usersUsed));
+    const base = toEntitlement(org, org.subscription!, usage.branchesUsed, usage.usersUsed);
+    results.push(withPlatformOrgExtras(base, org, extrasMap.get(org.id)));
   }
   return results;
 }
 
 export async function getOrganizationForPlatform(orgId: string) {
-  return getEntitlementForOrg(orgId);
+  const org = await prisma.organization.findUnique({
+    where: { id: orgId },
+    include: { subscription: true },
+  });
+  if (!org?.subscription) return null;
+  const usage = await usageForOrg(orgId);
+  const base = toEntitlement(org, org.subscription, usage.branchesUsed, usage.usersUsed);
+  const extrasMap = await loadPlatformOrgExtrasMap([orgId]);
+  return withPlatformOrgExtras(base, org, extrasMap.get(orgId));
 }
 
 export type PatchSubscriptionInput = {

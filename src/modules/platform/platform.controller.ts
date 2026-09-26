@@ -3,6 +3,7 @@
  * - GET  /api/platform/dashboard
  * - GET  /api/platform/users
  * - GET  /api/platform/branches
+ * - POST /api/platform/organizations/:orgId/branches
  * - GET  /api/platform/renewals|bills|payments|audit
  * - GET  /api/platform/organizations/:orgId/activity
  * - GET/POST/PATCH /api/platform/referrals
@@ -224,6 +225,144 @@ export async function listPlatformUsers(req: Request, res: Response, next: NextF
     }));
 
     res.json({ data: { users, total }, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// ─── POST /api/platform/organizations/:orgId/branches ────────────────────────
+
+const tenDigitPhone = z.string().regex(/^\d{10}$/, "Must be a 10-digit mobile number");
+const optionalTenDigitPhone = z
+  .string()
+  .regex(/^$|^\d{10}$/, "Must be a 10-digit mobile number")
+  .nullable()
+  .optional();
+
+const platformCreateBranchSchema = z.object({
+  name: z.string().min(1).max(160),
+  address: z.string().min(1).max(500),
+  phone: tenDigitPhone,
+  code: z.string().max(32).nullable().optional(),
+  city: z.string().max(120).nullable().optional(),
+  state: z.string().max(120).nullable().optional(),
+  pincode: z.string().max(12).nullable().optional(),
+  email: z.union([z.string().email(), z.literal(""), z.null()]).optional(),
+  managerName: z.string().max(120).nullable().optional(),
+  managerPhone: optionalTenDigitPhone,
+  isActive: z.boolean().optional(),
+  /** When true (default), raise maxBranchesOverride if the org is at its plan limit. */
+  raiseLimitIfNeeded: z.boolean().optional(),
+});
+
+/**
+ * Platform owner creates a workshop branch for an organization.
+ * If the plan is at its branch cap, optionally raises `maxBranchesOverride` first.
+ */
+export async function postPlatformOrganizationBranch(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const orgId = String(req.params.orgId ?? "");
+    if (!orgId) throw new AppHttpError(400, "Organization id is required.", "ORG_ID_REQUIRED");
+
+    const org = await prisma.organization.findUnique({
+      where: { id: orgId },
+      select: { id: true, name: true },
+    });
+    if (!org) throw new AppHttpError(404, "Organization not found.", "ORG_NOT_FOUND");
+
+    const body = platformCreateBranchSchema.parse(req.body);
+    const actor = actorFromReq(req);
+
+    const {
+      getEntitlementForOrg,
+      patchOrganizationSubscription,
+    } = await import("../organization/organization-subscription.service.js");
+    const { upsertBranchApi } = await import("../branches/branch-api.service.js");
+
+    let limitRaisedTo: number | null = null;
+    if (body.raiseLimitIfNeeded !== false) {
+      const entitlement = await getEntitlementForOrg(orgId);
+      if (entitlement) {
+        const used = entitlement.usage.branchesUsed;
+        const max = entitlement.subscription.effectiveMaxBranches;
+        if (max !== null && used >= max) {
+          const nextMax = used + 1;
+          await patchOrganizationSubscription(
+            orgId,
+            { maxBranchesOverride: nextMax },
+            actor
+          );
+          limitRaisedTo = nextMax;
+        }
+      }
+    }
+
+    const id = `br-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const code =
+      typeof body.code === "string" && body.code.trim()
+        ? body.code.trim().toUpperCase()
+        : null;
+    const email =
+      typeof body.email === "string" && body.email.trim() ? body.email.trim() : null;
+
+    const branch = await upsertBranchApi(
+      {
+        id,
+        name: body.name.trim(),
+        address: body.address.trim(),
+        phone: body.phone,
+        isActive: body.isActive ?? true,
+        qrCodeId: `qr-${id}`,
+        code,
+        city: body.city?.trim() || null,
+        state: body.state?.trim() || null,
+        pincode: body.pincode?.trim() || null,
+        email,
+        managerName: body.managerName?.trim() || null,
+        managerPhone: body.managerPhone?.trim() || null,
+        organizationId: orgId,
+      },
+      { skipLimitCheck: true }
+    );
+
+    await writePlatformAuditLog({
+      organizationId: orgId,
+      actor,
+      action: "branch.created",
+      after: {
+        branchId: branch.id,
+        name: branch.name,
+        code: branch.code ?? null,
+        limitRaisedTo,
+      },
+    });
+
+    res.status(201).json({
+      data: {
+        branch: {
+          id: branch.id,
+          name: branch.name,
+          address: branch.address,
+          phone: branch.phone,
+          isActive: branch.isActive,
+          code: branch.code ?? null,
+          city: branch.city ?? null,
+          state: branch.state ?? null,
+          pincode: branch.pincode ?? null,
+          email: branch.email ?? null,
+          managerName: branch.managerName ?? null,
+          managerPhone: branch.managerPhone ?? null,
+          organizationId: orgId,
+          organizationName: org.name,
+        },
+        limitRaisedTo,
+      },
+      error: null,
+    });
   } catch (e) {
     next(e);
   }
