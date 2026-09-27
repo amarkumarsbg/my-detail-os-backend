@@ -213,6 +213,78 @@ function addCapacity(base: number | null | undefined, extra: number): number | n
   return normalized + extra;
 }
 
+/** Mid-cycle capacity purchase (no plan base / term / onboarding). */
+export type SubscriptionAddOnBreakdown = {
+  kind: "ADDON";
+  planCode: PlanCode;
+  planName: string;
+  extraBranches: number;
+  extraUsers: number;
+  extraBranchCost: number;
+  extraUserCost: number;
+  gstPercent: number;
+  gstAmount: number;
+  subTotalBeforeTax: number;
+  finalAmount: number;
+  previousAllowedBranches: number | null;
+  previousAllowedUsers: number | null;
+  finalAllowedBranches: number | null;
+  finalAllowedUsers: number | null;
+  currency: string;
+  expiresAt: string | null;
+};
+
+export function calculateAddOnPricing(input: {
+  planCode: PlanCode;
+  planName: string;
+  currentAllowedBranches: number | null;
+  currentAllowedUsers: number | null;
+  extraBranches: number;
+  extraUsers: number;
+  expiresAt: Date | null;
+  pricing?: SubscriptionPricingConfig;
+}): SubscriptionAddOnBreakdown {
+  const cfg = input.pricing ?? getSubscriptionPricingConfigFromEnv();
+  const extraBranches = clampNonNegativeInt(input.extraBranches);
+  const extraUsers = clampNonNegativeInt(input.extraUsers);
+  if (extraBranches <= 0 && extraUsers <= 0) {
+    throw new Error("Add at least one extra branch or user.");
+  }
+  if (input.currentAllowedBranches === null && extraBranches > 0) {
+    throw new Error("This plan already has unlimited branches.");
+  }
+  if (input.currentAllowedUsers === null && extraUsers > 0) {
+    throw new Error("This plan already has unlimited users.");
+  }
+
+  const extraBranchCost = round2(extraBranches * safeNumber(cfg.addOns.extraBranchPrice, 0));
+  const extraUserCost = round2(extraUsers * safeNumber(cfg.addOns.extraUserPrice, 0));
+  const taxable = round2(extraBranchCost + extraUserCost);
+  const gstPercent = safeNumber(cfg.gstPercent, 0);
+  const gstAmount = round2((taxable * gstPercent) / 100);
+  const finalAmount = round2(taxable + gstAmount);
+
+  return {
+    kind: "ADDON",
+    planCode: input.planCode,
+    planName: input.planName,
+    extraBranches,
+    extraUsers,
+    extraBranchCost,
+    extraUserCost,
+    gstPercent,
+    gstAmount,
+    subTotalBeforeTax: taxable,
+    finalAmount,
+    previousAllowedBranches: input.currentAllowedBranches,
+    previousAllowedUsers: input.currentAllowedUsers,
+    finalAllowedBranches: addCapacity(input.currentAllowedBranches, extraBranches),
+    finalAllowedUsers: addCapacity(input.currentAllowedUsers, extraUsers),
+    currency: cfg.currency,
+    expiresAt: input.expiresAt ? input.expiresAt.toISOString() : null,
+  };
+}
+
 export function calculateSubscriptionPricing(input: {
   planCode: PlanCode;
   planName: string;

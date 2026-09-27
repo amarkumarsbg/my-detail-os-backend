@@ -29,6 +29,7 @@ import { customerAuthRouter } from "./modules/customers/customer-auth.routes.js"
 import { customerBootstrapRouter } from "./modules/customers/customer-bootstrap.routes.js";
 import { isSwaggerEnabled, registerSwagger } from "./docs/register-swagger.js";
 import { publicRouter } from "./routes/public.routes.js";
+import { webhooksRouter } from "./routes/webhooks.routes.js";
 
 import { prisma } from "./lib/prisma.js";
 import { getPublicInvoiceView } from "./modules/invoices/public-invoice.service.js";
@@ -38,6 +39,7 @@ import { verifyJobCardSecureToken } from "./lib/secure-token.js";
 import { getCollectionItem } from "./modules/collections/app-json-store.js";
 import { AppError } from "./lib/app-error.js";
 import { perfMiddleware } from "./middleware/perf.js";
+import { isRazorpayEnabled } from "./lib/razorpay.js";
 
 const app = express();
 
@@ -53,6 +55,7 @@ app.use(
         "http://localhost:3001",
         "http://localhost:3002",
         "http://localhost:3003",
+        "http://localhost:3005",
       ];
       const allowed = (env.FRONTEND_ORIGIN ?? defaults.join(","))
         .split(",")
@@ -83,6 +86,14 @@ app.use(
     credentials: true,
   })
 );
+
+/** Razorpay webhooks need the raw body for signature verification. */
+app.use(
+  "/api/webhooks",
+  express.raw({ type: "application/json" }),
+  webhooksRouter
+);
+
 /** Invoice email attaches base64 PDFs; default 100kb limit causes "request entity too large". */
 app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: true, limit: "12mb" }));
@@ -113,7 +124,7 @@ app.get("/", (_req, res) => {
 registerSwagger(app);
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, payments: isRazorpayEnabled() ? "razorpay" : "manual" });
 });
 
 app.get("/health/db", async (_req, res, next) => {

@@ -17,7 +17,9 @@ import {
   type PlanLimits,
 } from "../../lib/plan-catalog.js";
 import {
+  calculateAddOnPricing,
   calculateSubscriptionPricing,
+  type SubscriptionAddOnBreakdown,
   type SubscriptionPricingBreakdown,
   type SubscriptionPricingInput,
 } from "../../lib/subscription-pricing.js";
@@ -31,6 +33,13 @@ import {
   termLabelFromMonths,
   type GraceOrLockStatus,
 } from "../../lib/subscription-lock.js";
+import {
+  createRazorpayOrder,
+  fetchCapturedRazorpayPaymentForOrder,
+  getRazorpayKeyId,
+  isRazorpayEnabled,
+  verifyRazorpayPaymentSignature,
+} from "../../lib/razorpay.js";
 
 export const DEFAULT_ORG_ID = "org-default";
 
@@ -96,6 +105,22 @@ export type SubscriptionPaymentRow = {
   recordedBy: string | null;
   verifiedAt: string | null;
   createdAt: string;
+  gatewayProvider: string | null;
+  gatewayOrderId: string | null;
+  gatewayPaymentId: string | null;
+};
+
+/** Returned when Razorpay is configured — studio opens Checkout with this payload. */
+export type RazorpayCheckoutPayload = {
+  provider: "RAZORPAY";
+  keyId: string;
+  orderId: string;
+  amount: number;
+  currency: string;
+  paymentId: string;
+  name: string;
+  description: string;
+  prefill: { name?: string; email?: string; contact?: string };
 };
 
 export type SubscriptionBillRow = {
@@ -169,9 +194,13 @@ export function toEntitlement(
   const limits = normalizedLimitsForSubscription(sub);
   const max = effectiveMaxBranches(limits, sub.maxBranchesOverride);
   const maxUsers = effectiveMaxUsers(limits, sub.maxUsersOverride);
-  const statusOk = sub.status === "ACTIVE" || sub.status === "PAST_DUE";
-  const canCreate = statusOk && canCreateWithLimit(branchesUsed, max);
   const expiresAt = resolveExpiresAt(sub);
+  /** TRIAL orgs use the workshop with plan limits until trialEndsAt (= expiresAt). */
+  const trialStillActive =
+    sub.status === "TRIAL" && (!expiresAt || expiresAt.getTime() > now.getTime());
+  const statusOk =
+    sub.status === "ACTIVE" || sub.status === "PAST_DUE" || trialStillActive;
+  const canCreate = statusOk && canCreateWithLimit(branchesUsed, max);
   const exportLocked = isExportLocked(expiresAt, now);
   const termMonths = normalizeTermMonths(sub.termMonths);
   return {
@@ -668,7 +697,15 @@ async function isFirstSubscriptionForOrg(organizationId: string): Promise<boolea
   return billCount === 0 && paidCount === 0;
 }
 
-function parsePricingFromNotes(notes: string | null | undefined): SubscriptionPricingBreakdown | null {
+type ParsedPaymentPricing = SubscriptionPricingBreakdown | SubscriptionAddOnBreakdown;
+
+function isAddOnBreakdown(
+  pricing: ParsedPaymentPricing | null | undefined
+): pricing is SubscriptionAddOnBreakdown {
+  return Boolean(pricing && "kind" in pricing && pricing.kind === "ADDON");
+}
+
+function parsePricingFromNotes(notes: string | null | undefined): ParsedPaymentPricing | null {
   if (!notes) return null;
   const marker = "SUBSCRIPTION_PRICING:";
   const idx = notes.indexOf(marker);
@@ -676,19 +713,22 @@ function parsePricingFromNotes(notes: string | null | undefined): SubscriptionPr
   const json = notes.slice(idx + marker.length).trim();
   if (!json) return null;
   try {
-    return JSON.parse(json) as SubscriptionPricingBreakdown;
+    return JSON.parse(json) as ParsedPaymentPricing;
   } catch {
     return null;
   }
 }
 
-function pricingNotes(prefix: string, breakdown: SubscriptionPricingBreakdown): string {
+function pricingNotes(
+  prefix: string,
+  breakdown: SubscriptionPricingBreakdown | SubscriptionAddOnBreakdown
+): string {
   return `${prefix}\n${"SUBSCRIPTION_PRICING:"}${JSON.stringify(breakdown)}`;
 }
 
 export async function getSubscriptionPricingQuote(
   organizationId: string,
-  payload: SubscriptionPricingInput
+  payload: SubscriptionPricingInput & { planCode?: string }
 ): Promise<StudioPricingQuote> {
   const org = await prisma.organization.findUnique({
     where: { id: organizationId },
@@ -698,15 +738,35 @@ export async function getSubscriptionPricingQuote(
     throw new AppHttpError(404, "Subscription not found", "SUBSCRIPTION_MISSING");
   }
   const isFirstSubscription = await isFirstSubscriptionForOrg(organizationId);
-  const limits = normalizedLimitsForSubscription(org.subscription);
   const pricing = await getResolvedSubscriptionPricing();
+
+  let planCode = org.subscription.planCode as PlanCode;
+  let planName = org.subscription.planName;
+  let limits = normalizedLimitsForSubscription(org.subscription);
+
+  const requestedPlan = payload.planCode?.trim();
+  if (requestedPlan) {
+    const template = await getPlanTemplate(requestedPlan);
+    if (!template) {
+      throw new AppHttpError(400, `Unknown plan code: ${requestedPlan}`, "UNKNOWN_PLAN");
+    }
+    planCode = template.planCode as PlanCode;
+    planName = template.planName;
+    limits = template.limits;
+  }
+
   const breakdown = calculateSubscriptionPricing({
-    planCode: org.subscription.planCode,
-    planName: org.subscription.planName,
+    planCode,
+    planName,
     limits,
     isFirstSubscription,
     pricing,
-    payload,
+    payload: {
+      termMonths: payload.termMonths,
+      extraBranches: payload.extraBranches,
+      extraUsers: payload.extraUsers,
+      referralCode: payload.referralCode,
+    },
   });
   return { breakdown };
 }
@@ -717,12 +777,23 @@ export async function requestSubscriptionRenewal(
   opts?: {
     notes?: string;
     method?: string;
+    planCode?: string;
     termMonths?: number;
     extraBranches?: number;
     extraUsers?: number;
     referralCode?: string | null;
+    /** Prefer online checkout when Razorpay is configured (default true). */
+    preferOnline?: boolean;
+    /** Prefill for Razorpay Checkout */
+    payerName?: string | null;
+    payerEmail?: string | null;
+    payerPhone?: string | null;
   }
-): Promise<{ entitlement: EntitlementPayload; payment: SubscriptionPaymentRow }> {
+): Promise<{
+  entitlement: EntitlementPayload;
+  payment: SubscriptionPaymentRow;
+  checkout: RazorpayCheckoutPayload | null;
+}> {
   const org = await prisma.organization.findUnique({
     where: { id: organizationId },
     include: { subscription: true },
@@ -732,29 +803,93 @@ export async function requestSubscriptionRenewal(
   }
 
   const quote = await getSubscriptionPricingQuote(organizationId, {
+    planCode: opts?.planCode,
     termMonths: normalizeTermMonths(opts?.termMonths),
     extraBranches: Math.max(0, Math.floor(opts?.extraBranches ?? 0)),
     extraUsers: Math.max(0, Math.floor(opts?.extraUsers ?? 0)),
     referralCode: opts?.referralCode ?? null,
   });
 
-  const payment = await prisma.subscriptionPayment.create({
+  const preferOnline = opts?.preferOnline !== false;
+  const useRazorpay = preferOnline && isRazorpayEnabled();
+  const method = useRazorpay ? "RAZORPAY" : opts?.method ?? "MANUAL";
+
+  let payment = await prisma.subscriptionPayment.create({
     data: {
       organizationId,
       subscriptionId: org.subscription.id,
-      status: "PENDING",
+      status: useRazorpay ? "PROCESSING" : "PENDING",
       amount: quote.breakdown.finalAmount,
       currency: quote.breakdown.currency,
-      method: opts?.method ?? "MANUAL",
-      notes: pricingNotes(opts?.notes ?? "Renewal requested from studio", quote.breakdown),
+      method,
+      gatewayProvider: useRazorpay ? "RAZORPAY" : "MANUAL",
+      notes: pricingNotes(
+        useRazorpay ? "Online renewal via Razorpay" : opts?.notes ?? "Renewal requested from studio",
+        quote.breakdown
+      ),
       recordedBy: actorLabel,
     },
   });
 
+  let checkout: RazorpayCheckoutPayload | null = null;
+
+  if (useRazorpay) {
+    try {
+      const order = await createRazorpayOrder({
+        amountInr: quote.breakdown.finalAmount,
+        currency: quote.breakdown.currency,
+        receipt: payment.id,
+        notes: {
+          organizationId,
+          paymentId: payment.id,
+          planCode: org.subscription.planCode,
+        },
+      });
+      payment = await prisma.subscriptionPayment.update({
+        where: { id: payment.id },
+        data: { gatewayOrderId: order.id },
+      });
+      const keyId = getRazorpayKeyId();
+      if (!keyId) throw new Error("RAZORPAY_KEY_ID missing");
+      checkout = {
+        provider: "RAZORPAY",
+        keyId,
+        orderId: order.id,
+        amount: order.amount,
+        currency: order.currency,
+        paymentId: payment.id,
+        name: "MY DETAIL OS",
+        description: `${org.subscription.planName} · ${quote.breakdown.termMonths} mo · ${org.name}`,
+        prefill: {
+          name: opts?.payerName?.trim() || undefined,
+          email: opts?.payerEmail?.trim() || undefined,
+          contact: opts?.payerPhone?.trim() || undefined,
+        },
+      };
+    } catch (err) {
+      // Fall back to manual queue so renewals never hard-fail if gateway is down.
+      payment = await prisma.subscriptionPayment.update({
+        where: { id: payment.id },
+        data: {
+          status: "PENDING",
+          method: "MANUAL",
+          gatewayProvider: "MANUAL",
+          notes: pricingNotes(
+            `Razorpay unavailable — queued for manual verification. ${
+              err instanceof Error ? err.message : "Unknown error"
+            }`,
+            quote.breakdown
+          ),
+        },
+      });
+      checkout = null;
+    }
+  }
+
   await prisma.organizationSubscription.update({
     where: { organizationId },
     data: {
-      paymentStatus: "PENDING",
+      paymentStatus: payment.status === "PROCESSING" ? "PROCESSING" : "PENDING",
       termMonths: quote.breakdown.termMonths,
     },
   });
@@ -770,10 +905,12 @@ export async function requestSubscriptionRenewal(
       action: "subscription.renew_request",
       before: { paymentStatus: org.subscription.paymentStatus },
       after: {
-        paymentStatus: "PENDING",
+        paymentStatus: payment.status,
         paymentId: payment.id,
         termMonths: quote.breakdown.termMonths,
         amount: quote.breakdown.finalAmount,
+        gateway: payment.gatewayProvider,
+        gatewayOrderId: payment.gatewayOrderId,
       },
     },
   });
@@ -782,7 +919,371 @@ export async function requestSubscriptionRenewal(
   return {
     entitlement: toEntitlement(org, updated, usage.branchesUsed, usage.usersUsed),
     payment: mapPayment(payment),
+    checkout,
   };
+}
+
+export type StudioAddOnQuote = { breakdown: SubscriptionAddOnBreakdown };
+
+/**
+ * Mid-cycle capacity quote for ACTIVE paid orgs (extras + GST only; no term/base).
+ */
+export async function getAddOnPricingQuote(
+  organizationId: string,
+  payload: { extraBranches?: number; extraUsers?: number }
+): Promise<StudioAddOnQuote> {
+  const org = await prisma.organization.findUnique({
+    where: { id: organizationId },
+    include: { subscription: true },
+  });
+  if (!org?.subscription) {
+    throw new AppHttpError(404, "Subscription not found", "SUBSCRIPTION_MISSING");
+  }
+  const sub = org.subscription;
+  if (sub.status !== "ACTIVE" || sub.paymentStatus !== "PAID") {
+    throw new AppHttpError(
+      400,
+      "Add-ons are available only on an active paid subscription. Use Renew / Upgrade instead.",
+      "ADDON_NOT_ELIGIBLE"
+    );
+  }
+  const expiresAt = resolveExpiresAt(sub);
+  if (expiresAt && expiresAt.getTime() <= Date.now()) {
+    throw new AppHttpError(
+      400,
+      "Subscription has expired. Renew the plan before buying add-ons.",
+      "ADDON_EXPIRED"
+    );
+  }
+
+  const limits = normalizedLimitsForSubscription(sub);
+  const currentAllowedBranches = effectiveMaxBranches(limits, sub.maxBranchesOverride);
+  const currentAllowedUsers = effectiveMaxUsers(limits, sub.maxUsersOverride);
+  const pricing = await getResolvedSubscriptionPricing();
+
+  try {
+    const breakdown = calculateAddOnPricing({
+      planCode: sub.planCode as PlanCode,
+      planName: sub.planName,
+      currentAllowedBranches,
+      currentAllowedUsers,
+      extraBranches: payload.extraBranches ?? 0,
+      extraUsers: payload.extraUsers ?? 0,
+      expiresAt,
+      pricing,
+    });
+    return { breakdown };
+  } catch (err) {
+    throw new AppHttpError(
+      400,
+      err instanceof Error ? err.message : "Invalid add-on request",
+      "ADDON_QUOTE_INVALID"
+    );
+  }
+}
+
+/**
+ * Purchase mid-cycle branch/user capacity without extending the billing period.
+ * Does not flip subscription.paymentStatus to PENDING (keeps workshop access).
+ */
+export async function requestSubscriptionAddOns(
+  organizationId: string,
+  actorLabel: string,
+  opts?: {
+    extraBranches?: number;
+    extraUsers?: number;
+    preferOnline?: boolean;
+    notes?: string;
+    method?: string;
+    payerName?: string | null;
+    payerEmail?: string | null;
+    payerPhone?: string | null;
+  }
+): Promise<{
+  entitlement: EntitlementPayload;
+  payment: SubscriptionPaymentRow;
+  checkout: RazorpayCheckoutPayload | null;
+}> {
+  const org = await prisma.organization.findUnique({
+    where: { id: organizationId },
+    include: { subscription: true },
+  });
+  if (!org?.subscription) {
+    throw new AppHttpError(404, "Subscription not found", "SUBSCRIPTION_MISSING");
+  }
+
+  const quote = await getAddOnPricingQuote(organizationId, {
+    extraBranches: opts?.extraBranches,
+    extraUsers: opts?.extraUsers,
+  });
+
+  const preferOnline = opts?.preferOnline !== false;
+  const useRazorpay = preferOnline && isRazorpayEnabled();
+  const method = useRazorpay ? "RAZORPAY" : opts?.method ?? "MANUAL";
+
+  let payment = await prisma.subscriptionPayment.create({
+    data: {
+      organizationId,
+      subscriptionId: org.subscription.id,
+      status: useRazorpay ? "PROCESSING" : "PENDING",
+      amount: quote.breakdown.finalAmount,
+      currency: quote.breakdown.currency,
+      method,
+      gatewayProvider: useRazorpay ? "RAZORPAY" : "MANUAL",
+      notes: pricingNotes(
+        useRazorpay
+          ? "Online add-on via Razorpay"
+          : opts?.notes ?? "Capacity add-on requested from studio",
+        quote.breakdown
+      ),
+      recordedBy: actorLabel,
+    },
+  });
+
+  let checkout: RazorpayCheckoutPayload | null = null;
+
+  if (useRazorpay) {
+    try {
+      const order = await createRazorpayOrder({
+        amountInr: quote.breakdown.finalAmount,
+        currency: quote.breakdown.currency,
+        receipt: payment.id,
+        notes: {
+          organizationId,
+          paymentId: payment.id,
+          kind: "ADDON",
+          planCode: org.subscription.planCode,
+        },
+      });
+      payment = await prisma.subscriptionPayment.update({
+        where: { id: payment.id },
+        data: { gatewayOrderId: order.id },
+      });
+      const keyId = getRazorpayKeyId();
+      if (!keyId) throw new Error("RAZORPAY_KEY_ID missing");
+      const parts: string[] = [];
+      if (quote.breakdown.extraBranches > 0) {
+        parts.push(
+          `${quote.breakdown.extraBranches} branch${quote.breakdown.extraBranches === 1 ? "" : "es"}`
+        );
+      }
+      if (quote.breakdown.extraUsers > 0) {
+        parts.push(
+          `${quote.breakdown.extraUsers} user${quote.breakdown.extraUsers === 1 ? "" : "s"}`
+        );
+      }
+      checkout = {
+        provider: "RAZORPAY",
+        keyId,
+        orderId: order.id,
+        amount: order.amount,
+        currency: order.currency,
+        paymentId: payment.id,
+        name: "MY DETAIL OS",
+        description: `Add-on · ${parts.join(" + ") || "capacity"} · ${org.name}`,
+        prefill: {
+          name: opts?.payerName?.trim() || undefined,
+          email: opts?.payerEmail?.trim() || undefined,
+          contact: opts?.payerPhone?.trim() || undefined,
+        },
+      };
+    } catch (err) {
+      payment = await prisma.subscriptionPayment.update({
+        where: { id: payment.id },
+        data: {
+          status: "PENDING",
+          method: "MANUAL",
+          gatewayProvider: "MANUAL",
+          notes: pricingNotes(
+            `Razorpay unavailable — queued for manual verification. ${
+              err instanceof Error ? err.message : "Unknown error"
+            }`,
+            quote.breakdown
+          ),
+        },
+      });
+      checkout = null;
+    }
+  }
+
+  await prisma.platformAuditLog.create({
+    data: {
+      organizationId,
+      actor: actorLabel,
+      action: "subscription.addon_request",
+      before: {
+        maxBranchesOverride: org.subscription.maxBranchesOverride,
+        maxUsersOverride: org.subscription.maxUsersOverride,
+        paymentStatus: org.subscription.paymentStatus,
+      },
+      after: {
+        paymentId: payment.id,
+        amount: quote.breakdown.finalAmount,
+        extraBranches: quote.breakdown.extraBranches,
+        extraUsers: quote.breakdown.extraUsers,
+        finalAllowedBranches: quote.breakdown.finalAllowedBranches,
+        finalAllowedUsers: quote.breakdown.finalAllowedUsers,
+        gateway: payment.gatewayProvider,
+        gatewayOrderId: payment.gatewayOrderId,
+      },
+    },
+  });
+
+  const usage = await usageForOrg(organizationId);
+  return {
+    entitlement: toEntitlement(org, org.subscription, usage.branchesUsed, usage.usersUsed),
+    payment: mapPayment(payment),
+    checkout,
+  };
+}
+
+/**
+ * Confirm Razorpay Checkout success from the studio client (signature verified).
+ * Idempotent if payment already PAID.
+ */
+export async function confirmRazorpaySubscriptionPayment(
+  organizationId: string,
+  input: {
+    paymentId: string;
+    razorpayOrderId: string;
+    razorpayPaymentId: string;
+    razorpaySignature: string;
+  },
+  actorLabel: string
+): Promise<EntitlementPayload> {
+  const payment = await prisma.subscriptionPayment.findFirst({
+    where: { id: input.paymentId, organizationId },
+  });
+  if (!payment) {
+    throw new AppHttpError(404, "Payment not found", "PAYMENT_MISSING");
+  }
+  if (payment.status === "PAID") {
+    const entitlement = await getEntitlementForOrg(organizationId);
+    if (!entitlement) throw new AppHttpError(404, "Subscription not found", "SUBSCRIPTION_MISSING");
+    return entitlement;
+  }
+  if (payment.gatewayOrderId && payment.gatewayOrderId !== input.razorpayOrderId) {
+    throw new AppHttpError(400, "Order mismatch for this payment", "ORDER_MISMATCH");
+  }
+  const ok = verifyRazorpayPaymentSignature({
+    orderId: input.razorpayOrderId,
+    paymentId: input.razorpayPaymentId,
+    signature: input.razorpaySignature,
+  });
+  if (!ok) {
+    throw new AppHttpError(400, "Invalid payment signature", "INVALID_SIGNATURE");
+  }
+
+  await prisma.subscriptionPayment.update({
+    where: { id: payment.id },
+    data: {
+      gatewayOrderId: input.razorpayOrderId,
+      gatewayPaymentId: input.razorpayPaymentId,
+      gatewayProvider: "RAZORPAY",
+      method: "RAZORPAY",
+    },
+  });
+
+  return verifySubscriptionPayment(
+    organizationId,
+    {
+      paymentId: payment.id,
+      outcome: "PAID",
+      txnReference: input.razorpayPaymentId,
+      notes: "Paid via Razorpay Checkout",
+    },
+    actorLabel
+  );
+}
+
+/**
+ * Recover a Checkout that succeeded on Razorpay but never reached confirm
+ * (e.g. modal ondismiss raced after the success screen).
+ * Verifies capture status via Razorpay Orders API — does not trust the client alone.
+ */
+export async function syncRazorpaySubscriptionPayment(
+  organizationId: string,
+  input: { paymentId: string; razorpayOrderId?: string },
+  actorLabel: string
+): Promise<EntitlementPayload> {
+  const payment = await prisma.subscriptionPayment.findFirst({
+    where: { id: input.paymentId, organizationId },
+  });
+  if (!payment) {
+    throw new AppHttpError(404, "Payment not found", "PAYMENT_MISSING");
+  }
+  if (payment.status === "PAID") {
+    const entitlement = await getEntitlementForOrg(organizationId);
+    if (!entitlement) throw new AppHttpError(404, "Subscription not found", "SUBSCRIPTION_MISSING");
+    return entitlement;
+  }
+
+  const orderId = input.razorpayOrderId?.trim() || payment.gatewayOrderId;
+  if (!orderId) {
+    throw new AppHttpError(400, "No Razorpay order on this payment", "ORDER_MISSING");
+  }
+  if (payment.gatewayOrderId && payment.gatewayOrderId !== orderId) {
+    throw new AppHttpError(400, "Order mismatch for this payment", "ORDER_MISMATCH");
+  }
+
+  const captured = await fetchCapturedRazorpayPaymentForOrder(orderId);
+  if (!captured) {
+    throw new AppHttpError(402, "Payment not captured on Razorpay yet", "PAYMENT_NOT_CAPTURED");
+  }
+
+  await prisma.subscriptionPayment.update({
+    where: { id: payment.id },
+    data: {
+      gatewayOrderId: orderId,
+      gatewayPaymentId: captured.paymentId,
+      gatewayProvider: "RAZORPAY",
+      method: "RAZORPAY",
+    },
+  });
+
+  return verifySubscriptionPayment(
+    organizationId,
+    {
+      paymentId: payment.id,
+      outcome: "PAID",
+      txnReference: captured.paymentId,
+      notes: "Paid via Razorpay (synced after Checkout)",
+    },
+    actorLabel
+  );
+}
+
+/** Webhook helper: mark PAID by Razorpay order id. */
+export async function settleRazorpayOrderFromWebhook(input: {
+  orderId: string;
+  paymentId: string;
+}): Promise<boolean> {
+  const payment = await prisma.subscriptionPayment.findFirst({
+    where: { gatewayOrderId: input.orderId },
+  });
+  if (!payment) return false;
+  if (payment.status === "PAID") return true;
+
+  await prisma.subscriptionPayment.update({
+    where: { id: payment.id },
+    data: {
+      gatewayPaymentId: input.paymentId,
+      gatewayProvider: "RAZORPAY",
+      method: "RAZORPAY",
+    },
+  });
+
+  await verifySubscriptionPayment(
+    payment.organizationId,
+    {
+      paymentId: payment.id,
+      outcome: "PAID",
+      txnReference: input.paymentId,
+      notes: "Paid via Razorpay webhook",
+    },
+    "razorpay-webhook"
+  );
+  return true;
 }
 
 export async function listSubscriptionPayments(organizationId: string): Promise<SubscriptionPaymentRow[]> {
@@ -873,6 +1374,9 @@ function mapPayment(p: {
   recordedBy: string | null;
   verifiedAt: Date | null;
   createdAt: Date;
+  gatewayProvider?: string | null;
+  gatewayOrderId?: string | null;
+  gatewayPaymentId?: string | null;
 }): SubscriptionPaymentRow {
   return {
     id: p.id,
@@ -885,6 +1389,9 @@ function mapPayment(p: {
     recordedBy: p.recordedBy,
     verifiedAt: p.verifiedAt?.toISOString() ?? null,
     createdAt: p.createdAt.toISOString(),
+    gatewayProvider: p.gatewayProvider ?? null,
+    gatewayOrderId: p.gatewayOrderId ?? null,
+    gatewayPaymentId: p.gatewayPaymentId ?? null,
   };
 }
 
@@ -957,8 +1464,134 @@ export type VerifyPaymentInput = {
   notes?: string | null;
 };
 
+async function settleAddOnPayment(
+  orgId: string,
+  org: { id: string; name: string; slug: string | null; isActive: boolean },
+  sub: OrganizationSubscription,
+  payment: {
+    id: string;
+    notes: string | null;
+    amount: number | null;
+    currency: string;
+    txnReference: string | null;
+  },
+  pricing: SubscriptionAddOnBreakdown,
+  input: VerifyPaymentInput,
+  actorLabel: string
+): Promise<EntitlementPayload> {
+  const now = new Date();
+  const currentEnd = resolveExpiresAt(sub);
+  const periodStart = now;
+  const periodEnd = currentEnd && currentEnd.getTime() > now.getTime() ? currentEnd : now;
+  const txnRef = input.txnReference?.trim() || payment.txnReference || `ADDON-${Date.now()}`;
+  const billNumber = await nextBillNumber(orgId);
+  const finalAmount = pricing.finalAmount ?? input.amount ?? payment.amount ?? 0;
+
+  const nextBranchOverride =
+    pricing.finalAllowedBranches === null
+      ? null
+      : pricing.finalAllowedBranches ?? sub.maxBranchesOverride;
+  const nextUsersOverride =
+    pricing.finalAllowedUsers === null
+      ? null
+      : pricing.finalAllowedUsers ?? sub.maxUsersOverride;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.subscriptionPayment.update({
+      where: { id: payment.id },
+      data: {
+        status: "PAID",
+        txnReference: txnRef,
+        notes: input.notes ?? payment.notes,
+        amount: input.amount ?? payment.amount,
+        verifiedAt: now,
+        recordedBy: actorLabel,
+      },
+    });
+
+    await tx.organizationSubscription.update({
+      where: { organizationId: orgId },
+      data: {
+        paymentStatus: "PAID",
+        lastPaymentTxnId: txnRef,
+        status: "ACTIVE",
+        maxBranchesOverride: nextBranchOverride,
+        maxUsersOverride: nextUsersOverride,
+        // Keep existing startsAt / expiresAt / termMonths / plan.
+      },
+    });
+
+    await tx.organization.update({
+      where: { id: orgId },
+      data: { isActive: true },
+    });
+
+    await tx.subscriptionBill.create({
+      data: {
+        organizationId: orgId,
+        subscriptionId: sub.id,
+        paymentId: payment.id,
+        billNumber,
+        planName: sub.planName,
+        termMonths: sub.termMonths,
+        termLabel: "Add-on",
+        periodStart,
+        periodEnd,
+        baseAmount: 0,
+        extraBranchCost: pricing.extraBranchCost,
+        extraUserCost: pricing.extraUserCost,
+        extraBranches: pricing.extraBranches,
+        extraUsers: pricing.extraUsers,
+        onboardingFee: 0,
+        referralDiscount: 0,
+        gstPercent: pricing.gstPercent,
+        gstAmount: pricing.gstAmount,
+        totalAmount: finalAmount,
+        amount: finalAmount,
+        currency: payment.currency,
+      },
+    });
+
+    await tx.platformAuditLog.create({
+      data: {
+        organizationId: orgId,
+        actor: actorLabel,
+        action: "subscription.addon_verified",
+        before: {
+          maxBranchesOverride: sub.maxBranchesOverride,
+          maxUsersOverride: sub.maxUsersOverride,
+          paymentStatus: sub.paymentStatus,
+          expiresAt: currentEnd?.toISOString() ?? null,
+        },
+        after: {
+          maxBranchesOverride: nextBranchOverride,
+          maxUsersOverride: nextUsersOverride,
+          paymentStatus: "PAID",
+          billNumber,
+          txnReference: txnRef,
+          finalAmount,
+          extraBranches: pricing.extraBranches,
+          extraUsers: pricing.extraUsers,
+          expiresAt: currentEnd?.toISOString() ?? null,
+        },
+      },
+    });
+  });
+
+  const usage = await usageForOrg(orgId);
+  const [updatedOrg, updated] = await Promise.all([
+    prisma.organization.findUniqueOrThrow({ where: { id: orgId } }),
+    prisma.organizationSubscription.findUniqueOrThrow({
+      where: { organizationId: orgId },
+    }),
+  ]);
+  return toEntitlement(updatedOrg, updated, usage.branchesUsed, usage.usersUsed);
+}
+
 /**
- * Admin verifies a renew payment: on PAID, extends expiresAt by termMonths and creates a bill.
+ * Admin verifies a renew or mid-cycle add-on payment.
+ * Renew: extends expiresAt by termMonths and creates a bill.
+ * Add-on: raises capacity overrides only; keeps the current expiry.
  */
 export async function verifySubscriptionPayment(
   orgId: string,
@@ -984,6 +1617,7 @@ export async function verifySubscriptionPayment(
   const pricing = parsePricingFromNotes(payment.notes);
 
   if (input.outcome === "FAILED") {
+    const isAddOn = isAddOnBreakdown(pricing);
     await prisma.$transaction([
       prisma.subscriptionPayment.update({
         where: { id: payment.id },
@@ -996,15 +1630,20 @@ export async function verifySubscriptionPayment(
           recordedBy: actorLabel,
         },
       }),
-      prisma.organizationSubscription.update({
-        where: { organizationId: orgId },
-        data: { paymentStatus: "FAILED" },
-      }),
+      // Mid-cycle add-ons must not flip a healthy PAID subscription to FAILED.
+      ...(isAddOn
+        ? []
+        : [
+            prisma.organizationSubscription.update({
+              where: { organizationId: orgId },
+              data: { paymentStatus: "FAILED" },
+            }),
+          ]),
       prisma.platformAuditLog.create({
         data: {
           organizationId: orgId,
           actor: actorLabel,
-          action: "subscription.payment_failed",
+          action: isAddOn ? "subscription.addon_failed" : "subscription.payment_failed",
           before: { paymentId: payment.id, status: payment.status },
           after: { status: "FAILED" },
         },
@@ -1017,7 +1656,12 @@ export async function verifySubscriptionPayment(
     return toEntitlement(org, updated, usage.branchesUsed, usage.usersUsed);
   }
 
-  const termMonths = normalizeTermMonths(pricing?.termMonths ?? sub.termMonths);
+  if (isAddOnBreakdown(pricing)) {
+    return settleAddOnPayment(orgId, org, sub, payment, pricing, input, actorLabel);
+  }
+
+  const renewPricing = pricing as SubscriptionPricingBreakdown | null;
+  const termMonths = normalizeTermMonths(renewPricing?.termMonths ?? sub.termMonths);
   const now = new Date();
   const currentEnd = resolveExpiresAt(sub);
   const periodStart = currentEnd && currentEnd.getTime() > now.getTime() ? currentEnd : now;
@@ -1025,21 +1669,33 @@ export async function verifySubscriptionPayment(
   const txnRef = input.txnReference?.trim() || payment.txnReference || `MANUAL-${Date.now()}`;
   const billNumber = await nextBillNumber(orgId);
   const termLabel = termLabelFromMonths(termMonths);
-  const currentLimits = normalizedLimitsForSubscription(sub);
+
+  let nextPlanCode = sub.planCode;
+  let nextPlanName = sub.planName;
+  let nextLimits = normalizedLimitsForSubscription(sub);
+  if (renewPricing?.planCode) {
+    const template = await getPlanTemplate(renewPricing.planCode);
+    if (template) {
+      nextPlanCode = template.planCode;
+      nextPlanName = template.planName;
+      nextLimits = template.limits;
+    }
+  }
+
   const nextBranchOverride =
-    pricing?.finalAllowedBranches === null
+    renewPricing?.finalAllowedBranches === null
       ? null
-      : pricing?.finalAllowedBranches ?? sub.maxBranchesOverride;
+      : renewPricing?.finalAllowedBranches ?? sub.maxBranchesOverride;
   /**
    * Same "absolute overwrite" semantics as `maxBranchesOverride`: each renewal's
    * effective user cap is the base plan allowance + that renewal's extraUsers,
    * not additive across renewals — avoids double-counting after multiple renewals.
    */
   const nextUsersOverride =
-    pricing?.finalAllowedUsers === null
+    renewPricing?.finalAllowedUsers === null
       ? null
-      : pricing?.finalAllowedUsers ?? sub.maxUsersOverride;
-  const finalAmount = pricing?.finalAmount ?? input.amount ?? payment.amount ?? 0;
+      : renewPricing?.finalAllowedUsers ?? sub.maxUsersOverride;
+  const finalAmount = renewPricing?.finalAmount ?? input.amount ?? payment.amount ?? 0;
 
   await prisma.$transaction(async (tx) => {
     await tx.subscriptionPayment.update({
@@ -1060,7 +1716,9 @@ export async function verifySubscriptionPayment(
         paymentStatus: "PAID",
         lastPaymentTxnId: txnRef,
         status: "ACTIVE",
-        limits: asLimitsJson(currentLimits),
+        planCode: nextPlanCode,
+        planName: nextPlanName,
+        limits: asLimitsJson(nextLimits),
         maxBranchesOverride: nextBranchOverride,
         maxUsersOverride: nextUsersOverride,
         startsAt: sub.startsAt ?? periodStart,
@@ -1087,15 +1745,15 @@ export async function verifySubscriptionPayment(
         termLabel,
         periodStart,
         periodEnd,
-        baseAmount: pricing?.baseAmount ?? finalAmount,
-        extraBranchCost: pricing?.extraBranchCost ?? 0,
-        extraUserCost: pricing?.extraUserCost ?? 0,
-        extraBranches: pricing?.extraBranches ?? 0,
-        extraUsers: pricing?.extraUsers ?? 0,
-        onboardingFee: pricing?.onboardingFee ?? 0,
-        referralDiscount: pricing?.referralDiscount ?? 0,
-        gstPercent: pricing?.gstPercent ?? 0,
-        gstAmount: pricing?.gstAmount ?? 0,
+        baseAmount: renewPricing?.baseAmount ?? finalAmount,
+        extraBranchCost: renewPricing?.extraBranchCost ?? 0,
+        extraUserCost: renewPricing?.extraUserCost ?? 0,
+        extraBranches: renewPricing?.extraBranches ?? 0,
+        extraUsers: renewPricing?.extraUsers ?? 0,
+        onboardingFee: renewPricing?.onboardingFee ?? 0,
+        referralDiscount: renewPricing?.referralDiscount ?? 0,
+        gstPercent: renewPricing?.gstPercent ?? 0,
+        gstAmount: renewPricing?.gstAmount ?? 0,
         totalAmount: finalAmount,
         amount: finalAmount,
         currency: payment.currency,

@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import {
   adminMarkSubscriptionPaid,
+  getAddOnPricingQuote,
   getEntitlementForOrg,
   getOrganizationForPlatform,
   getSubscriptionPricingQuote,
@@ -11,12 +12,16 @@ import {
   listSubscriptionPayments,
   listSubscriptionRenewalHistory,
   patchOrganizationSubscription,
+  confirmRazorpaySubscriptionPayment,
+  requestSubscriptionAddOns,
   requestSubscriptionRenewal,
+  syncRazorpaySubscriptionPayment,
   verifySubscriptionPayment,
 } from "./organization-subscription.service.js";
 import { AppHttpError } from "../../lib/app-http-error.js";
 import { parsePlanLimits } from "../../lib/plan-catalog.js";
 import { prisma } from "../../lib/prisma.js";
+import { isRazorpayEnabled } from "../../lib/razorpay.js";
 
 async function resolveOrgId(req: Request): Promise<string | undefined> {
   if (req.auth?.organizationId) return req.auth.organizationId;
@@ -69,14 +74,111 @@ export async function postStudioRenewRequest(req: Request, res: Response, next: 
       .object({
         notes: z.string().max(500).optional(),
         method: z.string().max(64).optional(),
+        planCode: z
+          .string()
+          .min(2)
+          .max(24)
+          .regex(/^[A-Z][A-Z0-9_]{1,23}$/)
+          .optional(),
         termMonths: z.union([z.literal(1), z.literal(3), z.literal(12), z.literal(24), z.literal(36), z.literal(60)]).optional(),
         extraBranches: z.number().int().nonnegative().optional(),
         extraUsers: z.number().int().nonnegative().optional(),
         referralCode: z.string().max(32).nullable().optional(),
+        preferOnline: z.boolean().optional(),
       })
       .parse(req.body ?? {});
-    const result = await requestSubscriptionRenewal(orgId, actorFromReq(req), body);
+
+    const user = req.auth?.id
+      ? await prisma.user.findUnique({
+          where: { id: req.auth.id },
+          select: { name: true, email: true, phone: true },
+        })
+      : null;
+
+    const result = await requestSubscriptionRenewal(orgId, actorFromReq(req), {
+      ...body,
+      payerName: user?.name,
+      payerEmail: user?.email,
+      payerPhone: user?.phone,
+    });
     res.json({ data: result, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+export async function postStudioConfirmRazorpayPayment(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const orgId = await resolveOrgId(req);
+    if (!orgId) {
+      throw new AppHttpError(403, "Organization not found on user", "ORG_MISSING");
+    }
+    if (!isRazorpayEnabled()) {
+      throw new AppHttpError(503, "Online payments are not configured", "GATEWAY_DISABLED");
+    }
+    const body = z
+      .object({
+        paymentId: z.string().min(1),
+        razorpayOrderId: z.string().min(1),
+        razorpayPaymentId: z.string().min(1),
+        razorpaySignature: z.string().min(1),
+      })
+      .parse(req.body ?? {});
+    const entitlement = await confirmRazorpaySubscriptionPayment(
+      orgId,
+      body,
+      actorFromReq(req)
+    );
+    res.json({ data: { entitlement }, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+/** Recover Checkout success when the browser never posted the signature (modal race). */
+export async function postStudioSyncRazorpayPayment(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const orgId = await resolveOrgId(req);
+    if (!orgId) {
+      throw new AppHttpError(403, "Organization not found on user", "ORG_MISSING");
+    }
+    if (!isRazorpayEnabled()) {
+      throw new AppHttpError(503, "Online payments are not configured", "GATEWAY_DISABLED");
+    }
+    const body = z
+      .object({
+        paymentId: z.string().min(1),
+        razorpayOrderId: z.string().min(1).optional(),
+      })
+      .parse(req.body ?? {});
+    const entitlement = await syncRazorpaySubscriptionPayment(
+      orgId,
+      body,
+      actorFromReq(req)
+    );
+    res.json({ data: { entitlement }, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+export async function getStudioPaymentConfig(_req: Request, res: Response, next: NextFunction) {
+  try {
+    res.json({
+      data: {
+        provider: isRazorpayEnabled() ? "RAZORPAY" : "MANUAL",
+        onlineEnabled: isRazorpayEnabled(),
+      },
+      error: null,
+    });
   } catch (e) {
     next(e);
   }
@@ -90,6 +192,12 @@ export async function postStudioSubscriptionPricing(req: Request, res: Response,
     }
     const body = z
       .object({
+        planCode: z
+          .string()
+          .min(2)
+          .max(24)
+          .regex(/^[A-Z][A-Z0-9_]{1,23}$/)
+          .optional(),
         termMonths: z.union([z.literal(1), z.literal(3), z.literal(12), z.literal(24), z.literal(36), z.literal(60)]),
         extraBranches: z.number().int().nonnegative().default(0),
         extraUsers: z.number().int().nonnegative().default(0),
@@ -98,6 +206,60 @@ export async function postStudioSubscriptionPricing(req: Request, res: Response,
       .parse(req.body ?? {});
     const quote = await getSubscriptionPricingQuote(orgId, body);
     res.json({ data: quote, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+export async function postStudioAddOnPricing(req: Request, res: Response, next: NextFunction) {
+  try {
+    const orgId = await resolveOrgId(req);
+    if (!orgId) {
+      throw new AppHttpError(403, "Organization not found on user", "ORG_MISSING");
+    }
+    const body = z
+      .object({
+        extraBranches: z.number().int().nonnegative().default(0),
+        extraUsers: z.number().int().nonnegative().default(0),
+      })
+      .parse(req.body ?? {});
+    const quote = await getAddOnPricingQuote(orgId, body);
+    res.json({ data: quote, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+export async function postStudioAddOnRequest(req: Request, res: Response, next: NextFunction) {
+  try {
+    const orgId = await resolveOrgId(req);
+    if (!orgId) {
+      throw new AppHttpError(403, "Organization not found on user", "ORG_MISSING");
+    }
+    const body = z
+      .object({
+        notes: z.string().max(500).optional(),
+        method: z.string().max(64).optional(),
+        extraBranches: z.number().int().nonnegative().optional(),
+        extraUsers: z.number().int().nonnegative().optional(),
+        preferOnline: z.boolean().optional(),
+      })
+      .parse(req.body ?? {});
+
+    const user = req.auth?.id
+      ? await prisma.user.findUnique({
+          where: { id: req.auth.id },
+          select: { name: true, email: true, phone: true },
+        })
+      : null;
+
+    const result = await requestSubscriptionAddOns(orgId, actorFromReq(req), {
+      ...body,
+      payerName: user?.name,
+      payerEmail: user?.email,
+      payerPhone: user?.phone,
+    });
+    res.json({ data: result, error: null });
   } catch (e) {
     next(e);
   }

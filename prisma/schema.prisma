@@ -158,6 +158,12 @@ model SubscriptionPayment {
   notes          String?
   recordedBy     String?
   verifiedAt     DateTime?
+  /** Payment provider: MANUAL | RAZORPAY */
+  gatewayProvider   String?
+  /** Razorpay order id (order_…) */
+  gatewayOrderId    String?                  @unique
+  /** Razorpay payment id (pay_…) */
+  gatewayPaymentId  String?
   createdAt      DateTime                  @default(now())
   updatedAt      DateTime                  @updatedAt
   bill           SubscriptionBill?

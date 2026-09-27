@@ -80,6 +80,12 @@ const schema = z.object({
   /** Default Contact Us / Upgrade URLs stored on new subscriptions when not overridden. */
   DEFAULT_CONTACT_US_URL: z.string().optional(),
   DEFAULT_UPGRADE_URL: z.string().optional(),
+
+  /** Razorpay — SaaS subscription checkout. When unset, renewals stay MANUAL (admin verify). */
+  RAZORPAY_KEY_ID: z.string().optional(),
+  RAZORPAY_KEY_SECRET: z.string().optional(),
+  /** Webhook signing secret from Razorpay Dashboard → Webhooks. */
+  RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
 });
 
 export const env = schema.parse({
@@ -107,4 +113,7 @@ export const env = schema.parse({
   INTERNAL_JOB_SECRET: trimOpt(process.env.INTERNAL_JOB_SECRET),
   DEFAULT_CONTACT_US_URL: trimOpt(process.env.DEFAULT_CONTACT_US_URL),
   DEFAULT_UPGRADE_URL: trimOpt(process.env.DEFAULT_UPGRADE_URL),
+  RAZORPAY_KEY_ID: trimOpt(process.env.RAZORPAY_KEY_ID),
+  RAZORPAY_KEY_SECRET: trimOpt(process.env.RAZORPAY_KEY_SECRET),
+  RAZORPAY_WEBHOOK_SECRET: trimOpt(process.env.RAZORPAY_WEBHOOK_SECRET),
 });
