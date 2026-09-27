@@ -209,11 +209,20 @@ export async function countBranchesForOrg(organizationId: string): Promise<numbe
 }
 
 /**
- * Roles excluded from the billable "user seat" count: PLATFORM_OWNER (not a
- * tenant seat) and MECHANIC (shop-floor staff, not billed against the plan's
- * user/staff limit).
+ * Roles that do **not** consume a plan user seat:
+ * - PLATFORM_OWNER — vendor admin (not a workshop seat)
+ * - MECHANIC — shop-floor staff (not billed)
+ *
+ * **SUPER_ADMIN always counts as a user seat.** Every org’s owner login uses
+ * 1 of the plan’s included users (e.g. Starter 3 users = Super Admin + 2 staff).
  */
 const NON_BILLABLE_USER_ROLES = ["PLATFORM_OWNER", "MECHANIC"] as const;
+
+/** True when this role occupies a billable subscription user seat. */
+export function isBillableUserSeatRole(role: string): boolean {
+  if (role === "SUPER_ADMIN") return true;
+  return !(NON_BILLABLE_USER_ROLES as readonly string[]).includes(role);
+}
 
 export async function countActiveUsersForOrg(organizationId: string): Promise<number> {
   return prisma.user.count({

@@ -9,6 +9,17 @@
 
 Customers must never receive the platform login.
 
+## User seats (billing)
+
+| Role | Counts toward plan user limit? |
+|------|--------------------------------|
+| `SUPER_ADMIN` | **Yes — always** (org owner uses 1 seat) |
+| `ADMIN`, `MANAGER`, `BRANCH_MANAGER`, other staff | Yes |
+| `MECHANIC` | No |
+| `PLATFORM_OWNER` | No (vendor account) |
+
+Example: Starter includes 3 users → Super Admin + up to 2 more billable staff.
+
 ## Ensure your platform login (no Shell needed on Render free)
 
 1. In Render → API → **Environment**, set:

@@ -3,7 +3,10 @@ import type { Prisma, User as PrismaUser } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../lib/app-error.js";
 import { toStaffDirectoryEntry } from "../../lib/data-scope.js";
-import { assertCanCreateUser } from "../organization/organization-subscription.service.js";
+import {
+  assertCanCreateUser,
+  isBillableUserSeatRole,
+} from "../organization/organization-subscription.service.js";
 import { generateTemporaryPassword } from "../../lib/generate-password.js";
 import {
   permissionsForStaffAccessLevel,
@@ -144,8 +147,8 @@ export async function createUserApi(input: {
   if (!branch) {
     throw AppError.validation("Selected branch was not found.");
   }
-  // MECHANIC accounts don't count toward the billable user-seat limit — skip the gate entirely.
-  if ((input.isActive ?? true) && input.role !== "MECHANIC") {
+  // SUPER_ADMIN (and other billable roles) always consume a seat; MECHANIC / PLATFORM_OWNER do not.
+  if ((input.isActive ?? true) && isBillableUserSeatRole(input.role)) {
     await assertCanCreateUser(branch.organizationId);
   }
 
@@ -260,8 +263,11 @@ export async function updateUserApi(
     const nextActive = patch.isActive ?? current.isActive;
     const wasInactive = !current.isActive;
     const effectiveRole = patch.role ?? current.role;
-    // MECHANIC accounts don't count toward the billable user-seat limit — skip the gate entirely.
-    if (nextActive && wasInactive && effectiveRole !== "MECHANIC") {
+    const wasBillable = isBillableUserSeatRole(current.role);
+    const willBeBillable = nextActive && isBillableUserSeatRole(effectiveRole);
+    // Seat check when a billable seat is newly occupied (reactivate, or promote e.g. MECHANIC → SUPER_ADMIN).
+    // SUPER_ADMIN always counts as a user seat.
+    if (willBeBillable && (wasInactive || !wasBillable)) {
       const nextOrgId =
         typeof data.organizationId === "string" && data.organizationId.trim()
           ? data.organizationId
