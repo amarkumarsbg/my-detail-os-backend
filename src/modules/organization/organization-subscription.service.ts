@@ -417,10 +417,24 @@ function withPlatformOrgExtras(
   };
 }
 
-export async function listOrganizationsForPlatform() {
+export type ListOrganizationsForPlatformOpts = {
+  /** When set, only return orgs whose subscription.status matches. */
+  subscriptionStatus?: SubscriptionStatus;
+};
+
+export async function listOrganizationsForPlatform(
+  opts?: ListOrganizationsForPlatformOpts
+) {
   const orgs = await prisma.organization.findMany({
     orderBy: { name: "asc" },
     include: { subscription: true },
+    ...(opts?.subscriptionStatus
+      ? {
+          where: {
+            subscription: { status: opts.subscriptionStatus },
+          },
+        }
+      : {}),
   });
   const withSub = orgs.filter((o) => o.subscription);
   const extrasMap = await loadPlatformOrgExtrasMap(withSub.map((o) => o.id));

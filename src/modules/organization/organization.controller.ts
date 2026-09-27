@@ -146,9 +146,18 @@ export async function getStudioSubscriptionBill(req: Request, res: Response, nex
   }
 }
 
-export async function listPlatformOrganizations(_req: Request, res: Response, next: NextFunction) {
+const listOrgsQuerySchema = z.object({
+  subscriptionStatus: z
+    .enum(["ACTIVE", "PAST_DUE", "EXPIRED", "CANCELLED", "TRIAL"])
+    .optional(),
+});
+
+export async function listPlatformOrganizations(req: Request, res: Response, next: NextFunction) {
   try {
-    const organizations = await listOrganizationsForPlatform();
+    const query = listOrgsQuerySchema.parse(req.query ?? {});
+    const organizations = await listOrganizationsForPlatform({
+      subscriptionStatus: query.subscriptionStatus,
+    });
     res.json({ data: { organizations }, error: null });
   } catch (e) {
     next(e);
