@@ -213,6 +213,7 @@ export function toEntitlement(
     name: string;
     slug: string | null;
     shareReferralCode?: string | null;
+    referralCode?: string | null;
     referralWalletPoints?: number;
   },
   sub: OrganizationSubscription,
@@ -238,6 +239,7 @@ export function toEntitlement(
       name: org.name,
       slug: org.slug,
       shareReferralCode: org.shareReferralCode ?? null,
+      referralCode: org.referralCode ?? null,
       referralWalletPoints: org.referralWalletPoints ?? 0,
     },
     subscription: {
@@ -317,10 +319,12 @@ export async function getEntitlementForOrg(organizationId: string): Promise<Enti
     shareReferralCode = await ensureOrgShareReferralCode(organizationId);
   }
   const usage = await usageForOrg(organizationId);
+  const signupReferralCode = await inheritedSignupReferralCode(organizationId);
   return toEntitlement(
     {
       ...org,
       shareReferralCode,
+      referralCode: signupReferralCode,
       referralWalletPoints: org.referralWallet?.points ?? 0,
     },
     org.subscription,
@@ -2065,12 +2069,18 @@ export async function verifySubscriptionPayment(
     }),
   ]);
   const shareReferralCode = await ensureOrgShareReferralCode(orgId);
-  if (renewPricing && !isAddOnBreakdown(renewPricing)) {
+  const paidCount = await prisma.subscriptionPayment.count({
+    where: { organizationId: orgId, status: "PAID" },
+  });
+  // First paid conversion only — covers Razorpay quote notes and admin mark-paid.
+  if (paidCount === 1 && !(renewPricing && isAddOnBreakdown(renewPricing))) {
     try {
+      const signupReferral = await inheritedSignupReferralCode(orgId);
       await creditReferrerWalletForPaidSubscription({
         refereeOrganizationId: orgId,
         paymentId: payment.id,
-        breakdown: renewPricing,
+        breakdown: renewPricing && !isAddOnBreakdown(renewPricing) ? renewPricing : null,
+        referralCodeFallback: signupReferral,
       });
     } catch (err) {
       console.warn("[referral-wallet]", err instanceof Error ? err.message : err);
