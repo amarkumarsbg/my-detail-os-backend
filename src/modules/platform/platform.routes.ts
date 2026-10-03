@@ -44,6 +44,12 @@ import {
   patchPlatformBanner,
   deletePlatformBanner,
 } from "./marketing-banners.controller.js";
+import {
+  listSupportTickets,
+  getSupportTicket,
+  patchSupportTicket,
+  replySupportTicket,
+} from "./support-tickets.controller.js";
 
 export const platformRouter = Router();
 
@@ -103,3 +109,8 @@ platformRouter.get("/messaging", getPlatformMessagingStatus);
 platformRouter.post("/messaging/test", postPlatformMessagingTest);
 
 platformRouter.get("/contacts", listPlatformContacts);
+
+platformRouter.get("/support-tickets", listSupportTickets);
+platformRouter.get("/support-tickets/:id", getSupportTicket);
+platformRouter.patch("/support-tickets/:id", patchSupportTicket);
+platformRouter.post("/support-tickets/:id/reply", replySupportTicket);
