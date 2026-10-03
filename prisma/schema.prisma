@@ -131,6 +131,29 @@ model ReferralTransaction {
   @@index([walletId, createdAt])
 }
 
+enum MarketingBannerAudience {
+  TRIAL
+  ACTIVE
+  ALL
+}
+
+/** Platform-managed in-app banners shown in the workshop dashboard. */
+model MarketingBanner {
+  id        String                   @id @default(cuid())
+  title     String
+  body      String                   @default("")
+  audience  MarketingBannerAudience  @default(TRIAL)
+  enabled   Boolean                  @default(true)
+  ctaLabel  String                   @default("Upgrade")
+  ctaUrl    String                   @default("")
+  sortOrder Int                      @default(0)
+  createdBy String
+  createdAt DateTime                 @default(now())
+  updatedAt DateTime                 @updatedAt
+
+  @@index([enabled, audience, sortOrder])
+}
+
 /**
  * Singleton platform control-plane settings (id = "default").
  * Holds trial/billing defaults and optional plan catalog overrides.

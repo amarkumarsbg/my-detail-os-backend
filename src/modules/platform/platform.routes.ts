@@ -38,6 +38,12 @@ import {
   postPlatformConvertTrial,
   listPlatformContacts,
 } from "./platform.controller.js";
+import {
+  listPlatformBanners,
+  createPlatformBanner,
+  patchPlatformBanner,
+  deletePlatformBanner,
+} from "./marketing-banners.controller.js";
 
 export const platformRouter = Router();
 
@@ -78,6 +84,11 @@ platformRouter.get("/referrals", listPlatformReferrals);
 platformRouter.post("/referrals", createPlatformReferral);
 platformRouter.patch("/referrals/:id", patchPlatformReferral);
 platformRouter.get("/referral-wallets", listPlatformReferralWallets);
+
+platformRouter.get("/banners", listPlatformBanners);
+platformRouter.post("/banners", createPlatformBanner);
+platformRouter.patch("/banners/:id", patchPlatformBanner);
+platformRouter.delete("/banners/:id", deletePlatformBanner);
 
 platformRouter.get("/plans", getPlatformPlans);
 platformRouter.put("/plans", putPlatformPlans);

@@ -13,10 +13,12 @@ import {
   postStudioConfirmRazorpayPayment,
   postStudioSyncRazorpayPayment,
 } from "./organization.controller.js";
+import { listStudioBanners } from "../platform/marketing-banners.controller.js";
 
 export const organizationRouter = Router();
 
 organizationRouter.use(requireAuth);
+organizationRouter.get("/banners", listStudioBanners);
 organizationRouter.get("/subscription", getStudioSubscription);
 organizationRouter.get("/subscription/payment-config", getStudioPaymentConfig);
 organizationRouter.post("/subscription/pricing", postStudioSubscriptionPricing);
