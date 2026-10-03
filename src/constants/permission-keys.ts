@@ -16,6 +16,8 @@ export const PERMISSION_KEYS = [
   "REMINDERS",
   "FOLLOW_UPS",
   "REFERRALS",
+  "OFFERS",
+  "SUPPORT",
   "BILLING",
   "REPORTS",
   "CASH_BANK",

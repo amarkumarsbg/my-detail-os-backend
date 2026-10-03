@@ -13,6 +13,11 @@ import {
   changePassword,
   getMyReportFavourites,
   putMyReportFavourites,
+  listMyWorkspaces,
+  switchMyWorkspace,
+  linkMyWorkspace,
+  unlinkMyWorkspace,
+  createMyWorkspaceBranch,
 } from "./auth.controller.js";
 import { requireAuth, requireAnyPermission } from "../../middleware/auth.js";
 import { avatarUploadHandler } from "../../middleware/avatar-upload.js";
@@ -28,6 +33,11 @@ authRouter.post("/reset-password", completePasswordReset);
 authRouter.post("/otp/send", sendLoginOtp);
 authRouter.post("/otp/verify", verifyLoginOtp);
 authRouter.get("/me", requireAuth, me);
+authRouter.get("/workspaces", requireAuth, listMyWorkspaces);
+authRouter.post("/workspaces/switch", requireAuth, switchMyWorkspace);
+authRouter.post("/workspaces/link", requireAuth, linkMyWorkspace);
+authRouter.post("/workspaces/unlink", requireAuth, unlinkMyWorkspace);
+authRouter.post("/workspaces/create", requireAuth, createMyWorkspaceBranch);
 authRouter.patch("/me", requireAuth, patchMe);
 authRouter.post("/me/avatar", requireAuth, avatarUploadHandler, uploadMyAvatar);
 authRouter.get(

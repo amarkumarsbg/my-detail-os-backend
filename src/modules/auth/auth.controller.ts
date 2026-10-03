@@ -37,10 +37,45 @@ import {
   setUserReportFavourites,
 } from "./report-favourites.service.js";
 import { logAuthActivity } from "../../services/activity-logger.service.js";
+import {
+  listWorkspacesForUser,
+  resolveSwitchableUser,
+} from "./workspace-switch.service.js";
+import {
+  linkWorkspaceUsers,
+  unlinkWorkspaceUsers,
+} from "./workspace-links.service.js";
+import { provisionOrganization } from "../organization/organization-provision.service.js";
+import { AppHttpError } from "../../lib/app-http-error.js";
 
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
+});
+
+const switchWorkspaceSchema = z.object({
+  userId: z.string().min(1),
+});
+
+const linkWorkspaceSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(1),
+});
+
+const unlinkWorkspaceSchema = z.object({
+  userId: z.string().min(1),
+});
+
+const createWorkspaceBranchSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  city: z.string().trim().max(120).optional().nullable(),
+  phone: z
+    .string()
+    .regex(/^\d{10}$/, "Must be a 10-digit mobile number")
+    .optional()
+    .nullable(),
+  email: z.string().email(),
+  password: strongPasswordSchema,
 });
 
 const otpSendSchema = z.object({
@@ -571,6 +606,7 @@ export async function me(req: Request, res: Response) {
         phone: user.phone,
         role: user.role,
         branchId: user.branchId,
+        organizationId: user.organizationId,
         avatar: user.avatar ?? undefined,
         isActive: user.isActive,
         emailVerified: user.emailVerified || undefined,
@@ -607,6 +643,221 @@ export async function me(req: Request, res: Response) {
     },
     error: null,
   });
+}
+
+/** List workshops linked to this staff phone (same mobile → associated accounts). */
+export async function listMyWorkspaces(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!req.auth) {
+      res.status(401).json({ data: null, error: { message: "Unauthorized" } });
+      return;
+    }
+    const workspaces = await listWorkspacesForUser(req.auth.id);
+    res.json({ data: { workspaces }, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+/** Switch JWT session to another phone-linked staff account / workshop. */
+export async function switchMyWorkspace(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!req.auth) {
+      res.status(401).json({ data: null, error: { message: "Unauthorized" } });
+      return;
+    }
+    const body = switchWorkspaceSchema.parse(req.body);
+    const resolved = await resolveSwitchableUser(req.auth.id, body.userId);
+    if (!resolved.user) {
+      const status = resolved.reason === "Unauthorized" ? 401 : 400;
+      res.status(status).json({
+        data: null,
+        error: { message: resolved.reason ?? "Could not switch workspace" },
+      });
+      return;
+    }
+
+    const branch = await prisma.branch.findUnique({ where: { id: resolved.user.branchId } });
+    touchUserLastLogin(resolved.user.id);
+    res.json({ data: await authSuccessResponse(resolved.user, branch), error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+/** Link another workshop admin account (email + password) for workspace switching. */
+export async function linkMyWorkspace(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!req.auth) {
+      res.status(401).json({ data: null, error: { message: "Unauthorized" } });
+      return;
+    }
+    const body = linkWorkspaceSchema.parse(req.body);
+    const current = await prisma.user.findUnique({ where: { id: req.auth.id } });
+    if (!current?.isActive) {
+      res.status(401).json({ data: null, error: { message: "Unauthorized" } });
+      return;
+    }
+
+    const auth = await authenticateUser(body.email, body.password);
+    if (!auth) {
+      res.status(400).json({
+        data: null,
+        error: { message: "Invalid email or password for that workshop account" },
+      });
+      return;
+    }
+    if (auth.user.id === current.id) {
+      res.status(400).json({
+        data: null,
+        error: { message: "That is your current account" },
+      });
+      return;
+    }
+    if (auth.user.organizationId === current.organizationId) {
+      res.status(400).json({
+        data: null,
+        error: { message: "That account is already in this workshop" },
+      });
+      return;
+    }
+    if (auth.user.role === "PLATFORM_OWNER") {
+      res.status(400).json({
+        data: null,
+        error: { message: "Cannot link that account" },
+      });
+      return;
+    }
+
+    await linkWorkspaceUsers(
+      { userId: current.id, organizationId: current.organizationId },
+      { userId: auth.user.id, organizationId: auth.user.organizationId }
+    );
+
+    const workspaces = await listWorkspacesForUser(current.id);
+    res.json({ data: { workspaces }, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+/** Remove a credential-linked workshop from the switcher list. */
+export async function unlinkMyWorkspace(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!req.auth) {
+      res.status(401).json({ data: null, error: { message: "Unauthorized" } });
+      return;
+    }
+    const body = unlinkWorkspaceSchema.parse(req.body);
+    const current = await prisma.user.findUnique({ where: { id: req.auth.id } });
+    if (!current?.isActive) {
+      res.status(401).json({ data: null, error: { message: "Unauthorized" } });
+      return;
+    }
+    const target = await prisma.user.findUnique({ where: { id: body.userId } });
+    if (!target) {
+      res.status(404).json({ data: null, error: { message: "Account not found" } });
+      return;
+    }
+
+    await unlinkWorkspaceUsers(
+      { userId: current.id, organizationId: current.organizationId },
+      { userId: target.id, organizationId: target.organizationId }
+    );
+
+    const workspaces = await listWorkspacesForUser(current.id);
+    res.json({ data: { workspaces }, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+/**
+ * Create an independent workshop (org + HQ + SUPER_ADMIN) and auto-link it
+ * so the current user can switch from the navbar (GarageSaarthi-style branch).
+ */
+export async function createMyWorkspaceBranch(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!req.auth) {
+      res.status(401).json({ data: null, error: { message: "Unauthorized" } });
+      return;
+    }
+    const body = createWorkspaceBranchSchema.parse(req.body);
+    const current = await prisma.user.findUnique({ where: { id: req.auth.id } });
+    if (!current?.isActive) {
+      res.status(401).json({ data: null, error: { message: "Unauthorized" } });
+      return;
+    }
+    if (current.role !== "SUPER_ADMIN" && current.role !== "ADMIN") {
+      res.status(403).json({
+        data: null,
+        error: { message: "Only Admin or Super Admin can create a new branch workspace" },
+      });
+      return;
+    }
+
+    const phoneDigits =
+      body.phone?.trim() ||
+      current.phone.replace(/\D/g, "").slice(-10);
+    if (phoneDigits.length !== 10) {
+      res.status(400).json({
+        data: null,
+        error: { message: "A valid 10-digit branch phone is required" },
+      });
+      return;
+    }
+
+    const provisioned = await provisionOrganization({
+      businessName: body.name,
+      ownerName: current.name,
+      email: body.email.trim().toLowerCase(),
+      phone: phoneDigits,
+      password: body.password,
+      branchName: body.name,
+      planCode: "STARTER",
+      source: "workspace-branch-create",
+      actor: current.email,
+    });
+
+    const city = body.city?.trim();
+    if (city) {
+      await prisma.branch.update({
+        where: { id: provisioned.branch.id },
+        data: { city, address: city },
+      });
+    }
+
+    await linkWorkspaceUsers(
+      { userId: current.id, organizationId: current.organizationId },
+      {
+        userId: provisioned.user.id,
+        organizationId: provisioned.organizationId,
+      }
+    );
+
+    const workspaces = await listWorkspacesForUser(current.id);
+    res.status(201).json({
+      data: {
+        workspaces,
+        organization: {
+          id: provisioned.organization.id,
+          name: provisioned.organization.name,
+          slug: provisioned.organization.slug,
+        },
+        userId: provisioned.user.id,
+      },
+      error: null,
+    });
+  } catch (e) {
+    if (e instanceof AppHttpError) {
+      res.status(e.status).json({
+        data: null,
+        error: { message: e.message, code: e.code },
+      });
+      return;
+    }
+    next(e);
+  }
 }
 
 const reportFavouritesSchema = z.object({
