@@ -50,6 +50,11 @@ import {
   patchSupportTicket,
   replySupportTicket,
 } from "./support-tickets.controller.js";
+import {
+  listDemoRequests,
+  getDemoRequest,
+  patchDemoRequest,
+} from "./demo-requests.controller.js";
 
 export const platformRouter = Router();
 
@@ -114,3 +119,7 @@ platformRouter.get("/support-tickets", listSupportTickets);
 platformRouter.get("/support-tickets/:id", getSupportTicket);
 platformRouter.patch("/support-tickets/:id", patchSupportTicket);
 platformRouter.post("/support-tickets/:id/reply", replySupportTicket);
+
+platformRouter.get("/demo-requests", listDemoRequests);
+platformRouter.get("/demo-requests/:id", getDemoRequest);
+platformRouter.patch("/demo-requests/:id", patchDemoRequest);
