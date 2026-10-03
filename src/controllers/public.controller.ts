@@ -3,6 +3,10 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { calculateSubscriptionPricing } from "../lib/subscription-pricing.js";
 import {
+  REFERRER_POINTS_ON_PAID,
+  resolvePlatformReferral,
+} from "../lib/platform-referral.js";
+import {
   getEffectivePlanCatalogFromDb,
   getPlatformSettings,
   getResolvedSubscriptionPricing,
@@ -120,6 +124,13 @@ export async function postPublicSignup(req: Request, res: Response, next: NextFu
     const body = signupSchema.parse(req.body ?? {});
     const businessName = (body.businessName ?? body.companyName ?? "").trim();
     const ownerName = (body.ownerName ?? body.name ?? "").trim();
+
+    if (body.referralCode?.trim()) {
+      const resolved = await resolvePlatformReferral({ raw: body.referralCode });
+      if (resolved.message) {
+        throw new AppHttpError(400, resolved.message, "INVALID_REFERRAL");
+      }
+    }
 
     const provisioned = await provisionOrganization({
       businessName,
@@ -271,17 +282,21 @@ export async function postPublicPricingQuote(req: Request, res: Response, next: 
       });
       return;
     }
+    const resolvedReferral = await resolvePlatformReferral({
+      raw: body.referralCode ?? null,
+    });
     const breakdown = calculateSubscriptionPricing({
       planCode: plan.planCode,
       planName: plan.planName,
       limits: plan.limits,
       isFirstSubscription: body.isFirstSubscription ?? true,
       pricing,
+      resolvedReferral,
       payload: {
         termMonths: body.termMonths,
         extraBranches: body.extraBranches,
         extraUsers: body.extraUsers,
-        referralCode: body.referralCode ?? null,
+        referralCode: resolvedReferral.code ?? body.referralCode ?? null,
       },
     });
 
@@ -325,6 +340,25 @@ export async function getPublicPlans(_req: Request, res: Response, next: NextFun
           addOns: pricing.addOns,
           source: pricing.source,
         },
+      },
+      error: null,
+    });
+  } catch (e) {
+    next(e);
+  }
+}
+
+export async function getPublicReferral(req: Request, res: Response, next: NextFunction) {
+  try {
+    const code = String(req.params.code ?? "");
+    const resolved = await resolvePlatformReferral({ raw: code });
+    res.json({
+      data: {
+        valid: Boolean(resolved.code) && !resolved.message,
+        code: resolved.code,
+        message: resolved.message,
+        discountAmount: resolved.discountAmount,
+        referrerPoints: REFERRER_POINTS_ON_PAID,
       },
       error: null,
     });

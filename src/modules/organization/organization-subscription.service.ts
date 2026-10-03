@@ -25,6 +25,11 @@ import {
 } from "../../lib/subscription-pricing.js";
 import { getPlanTemplate, getResolvedSubscriptionPricing } from "../../lib/platform-settings.js";
 import {
+  inheritedSignupReferralCode,
+  resolvePlatformReferral,
+} from "../../lib/platform-referral.js";
+import { creditReferrerWalletForPaidSubscription } from "./referral-wallet.service.js";
+import {
   addMonths,
   daysUntilExpiry,
   graceOrLockStatus,
@@ -76,6 +81,7 @@ export type EntitlementOrganization = {
   referralCode?: string | null;
   /** Shareable partner code — issued after converting off trial. */
   shareReferralCode?: string | null;
+  referralWalletPoints?: number;
 };
 
 export type EntitlementPayload = {
@@ -202,7 +208,13 @@ function normalizedLimitsForSubscription(sub: OrganizationSubscription): PlanLim
 }
 
 export function toEntitlement(
-  org: { id: string; name: string; slug: string | null; shareReferralCode?: string | null },
+  org: {
+    id: string;
+    name: string;
+    slug: string | null;
+    shareReferralCode?: string | null;
+    referralWalletPoints?: number;
+  },
   sub: OrganizationSubscription,
   branchesUsed: number,
   usersUsed: number,
@@ -226,6 +238,7 @@ export function toEntitlement(
       name: org.name,
       slug: org.slug,
       shareReferralCode: org.shareReferralCode ?? null,
+      referralWalletPoints: org.referralWalletPoints ?? 0,
     },
     subscription: {
       planCode: sub.planCode,
@@ -296,7 +309,7 @@ async function usageForOrg(organizationId: string) {
 export async function getEntitlementForOrg(organizationId: string): Promise<EntitlementPayload | null> {
   const org = await prisma.organization.findUnique({
     where: { id: organizationId },
-    include: { subscription: true, partnerReferral: true },
+    include: { subscription: true, partnerReferral: true, referralWallet: true },
   });
   if (!org?.subscription) return null;
   let shareReferralCode = org.partnerReferral?.code ?? null;
@@ -305,7 +318,11 @@ export async function getEntitlementForOrg(organizationId: string): Promise<Enti
   }
   const usage = await usageForOrg(organizationId);
   return toEntitlement(
-    { ...org, shareReferralCode },
+    {
+      ...org,
+      shareReferralCode,
+      referralWalletPoints: org.referralWallet?.points ?? 0,
+    },
     org.subscription,
     usage.branchesUsed,
     usage.usersUsed
@@ -786,17 +803,31 @@ export async function getSubscriptionPricingQuote(
     limits = template.limits;
   }
 
+  const typedCode = payload.referralCode?.trim() || null;
+  const inherited = typedCode ? null : await inheritedSignupReferralCode(organizationId);
+  const resolvedReferral = await resolvePlatformReferral({
+    raw: typedCode || inherited,
+    refereeOrganizationId: organizationId,
+  });
+  const usableReferral =
+    !resolvedReferral.message
+      ? resolvedReferral
+      : typedCode
+        ? resolvedReferral
+        : { code: null, message: null, discountAmount: 0, referrerOrganizationId: null };
+
   const breakdown = calculateSubscriptionPricing({
     planCode,
     planName,
     limits,
     isFirstSubscription,
     pricing,
+    resolvedReferral: usableReferral,
     payload: {
       termMonths: payload.termMonths,
       extraBranches: payload.extraBranches,
       extraUsers: payload.extraUsers,
-      referralCode: payload.referralCode,
+      referralCode: usableReferral.code ?? typedCode,
     },
   });
   return { breakdown };
@@ -840,6 +871,9 @@ export async function requestSubscriptionRenewal(
     extraUsers: Math.max(0, Math.floor(opts?.extraUsers ?? 0)),
     referralCode: opts?.referralCode ?? null,
   });
+  if (quote.breakdown.referralValidationMessage) {
+    throw new AppHttpError(400, quote.breakdown.referralValidationMessage, "INVALID_REFERRAL");
+  }
 
   const preferOnline = opts?.preferOnline !== false;
   const useRazorpay = preferOnline && isRazorpayEnabled();
@@ -2031,6 +2065,21 @@ export async function verifySubscriptionPayment(
     }),
   ]);
   const shareReferralCode = await ensureOrgShareReferralCode(orgId);
+  if (renewPricing && !isAddOnBreakdown(renewPricing)) {
+    try {
+      await creditReferrerWalletForPaidSubscription({
+        refereeOrganizationId: orgId,
+        paymentId: payment.id,
+        breakdown: renewPricing,
+      });
+    } catch (err) {
+      console.warn("[referral-wallet]", err instanceof Error ? err.message : err);
+    }
+  }
+  const refereeWallet = await prisma.referralWallet.findUnique({
+    where: { organizationId: orgId },
+    select: { points: true },
+  });
   if (shouldNotifyOwner) {
     void notifyOwnerPlanActivated({
       organizationId: orgId,
@@ -2048,7 +2097,11 @@ export async function verifySubscriptionPayment(
     });
   }
   return toEntitlement(
-    { ...updatedOrg, shareReferralCode },
+    {
+      ...updatedOrg,
+      shareReferralCode,
+      referralWalletPoints: refereeWallet?.points ?? 0,
+    },
     updated,
     usage.branchesUsed,
     usage.usersUsed
@@ -2164,6 +2217,7 @@ function applyAdminDiscount(
     referralApplied: disc > 0,
     referralEligible: disc > 0,
     referralValidationMessage: null,
+    referrerOrganizationId: null,
     subTotalBeforeTax: taxable,
     gstAmount,
     finalAmount: roundMoney(taxable + gstAmount),
@@ -2234,6 +2288,9 @@ export async function createAdminPaymentLink(
     extraUsers: Math.max(0, Math.floor(input.extraUsers ?? 0)),
     referralCode,
   });
+  if (discountType === "CODE" && quote.breakdown.referralValidationMessage) {
+    throw new AppHttpError(400, quote.breakdown.referralValidationMessage, "INVALID_REFERRAL");
+  }
 
   const breakdown = applyAdminDiscount(
     quote.breakdown,
@@ -2331,7 +2388,6 @@ export async function createAdminPaymentLink(
       organizationId,
       actor: actorLabel,
       action: "subscription.payment_link_created",
-      before: null,
       after: {
         paymentId: payment.id,
         amount: breakdown.finalAmount,
@@ -2462,7 +2518,6 @@ export async function resendAdminPaymentLink(
       organizationId,
       actor: actorLabel,
       action: "subscription.payment_link_resent",
-      before: null,
       after: { paymentId, medium },
     },
   });

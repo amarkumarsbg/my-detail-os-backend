@@ -22,6 +22,7 @@ import {
   listPlatformReferrals,
   createPlatformReferral,
   patchPlatformReferral,
+  listPlatformReferralWallets,
   getPlatformPlans,
   putPlatformPlans,
   postPlatformPlan,
@@ -76,6 +77,7 @@ platformRouter.get("/audit", listPlatformAudit);
 platformRouter.get("/referrals", listPlatformReferrals);
 platformRouter.post("/referrals", createPlatformReferral);
 platformRouter.patch("/referrals/:id", patchPlatformReferral);
+platformRouter.get("/referral-wallets", listPlatformReferralWallets);
 
 platformRouter.get("/plans", getPlatformPlans);
 platformRouter.put("/plans", putPlatformPlans);

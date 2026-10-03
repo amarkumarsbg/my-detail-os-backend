@@ -831,6 +831,7 @@ export async function listPlatformReferrals(req: Request, res: Response, next: N
 
     const codes = await prisma.platformReferralCode.findMany({
       where: showInactive ? {} : { isActive: true },
+      include: { organization: { select: { id: true, name: true } } },
       orderBy: { createdAt: "desc" },
     });
 
@@ -842,6 +843,7 @@ export async function listPlatformReferrals(req: Request, res: Response, next: N
       createdBy: c.createdBy,
       notes: c.notes,
       organizationId: c.organizationId,
+      organizationName: c.organization?.name ?? null,
       createdAt: c.createdAt.toISOString(),
       updatedAt: c.updatedAt.toISOString(),
     }));
@@ -974,6 +976,43 @@ export async function patchPlatformReferral(req: Request, res: Response, next: N
         notes: updated.notes,
         createdAt: updated.createdAt.toISOString(),
         updatedAt: updated.updatedAt.toISOString(),
+      },
+      error: null,
+    });
+  } catch (e) {
+    next(e);
+  }
+}
+
+export async function listPlatformReferralWallets(req: Request, res: Response, next: NextFunction) {
+  try {
+    const wallets = await prisma.referralWallet.findMany({
+      include: {
+        organization: { select: { id: true, name: true } },
+        transactions: { orderBy: { createdAt: "desc" }, take: 20 },
+      },
+      orderBy: { points: "desc" },
+    });
+    res.json({
+      data: {
+        wallets: wallets.map((w) => ({
+          id: w.id,
+          organizationId: w.organizationId,
+          organizationName: w.organization.name,
+          points: w.points,
+          updatedAt: w.updatedAt.toISOString(),
+          transactions: w.transactions.map((t) => ({
+            id: t.id,
+            type: t.type,
+            points: t.points,
+            amountInr: t.amountInr,
+            referralCode: t.referralCode,
+            sourceOrganizationId: t.sourceOrganizationId,
+            paymentId: t.paymentId,
+            notes: t.notes,
+            createdAt: t.createdAt.toISOString(),
+          })),
+        })),
       },
       error: null,
     });

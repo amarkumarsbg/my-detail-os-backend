@@ -1,5 +1,7 @@
 import type { PlanCode } from "./plan-catalog.js";
 import type { PlanLimits } from "./plan-catalog.js";
+import type { ResolvedPlatformReferral } from "./platform-referral.js";
+import { REFERRAL_CODE_REGEX } from "./platform-referral.js";
 
 export type SubscriptionPricingInput = {
   termMonths: number;
@@ -25,6 +27,7 @@ export type SubscriptionPricingBreakdown = {
   referralApplied: boolean;
   referralEligible: boolean;
   referralValidationMessage: string | null;
+  referrerOrganizationId: string | null;
   gstPercent: number;
   gstAmount: number;
   subTotalBeforeTax: number;
@@ -183,8 +186,6 @@ export function mergeSubscriptionPricingConfig(
   };
 }
 
-const REFERRAL_CODE_REGEX = /^[A-Z0-9-]{4,24}$/;
-
 function clampNonNegativeInt(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n) || n < 0) return 0;
@@ -291,17 +292,18 @@ export function calculateSubscriptionPricing(input: {
   limits: PlanLimits;
   isFirstSubscription: boolean;
   payload: SubscriptionPricingInput;
-  /** When omitted, uses env defaults (backward compatible). */
   pricing?: SubscriptionPricingConfig;
+  resolvedReferral?: ResolvedPlatformReferral | null;
 }): SubscriptionPricingBreakdown {
   const cfg = input.pricing ?? getSubscriptionPricingConfigFromEnv();
   const termMonths = input.payload.termMonths;
   const termLabel = TERM_LABELS[termMonths] ?? `${termMonths} months`;
   const extraBranches = clampNonNegativeInt(input.payload.extraBranches);
   const extraUsers = clampNonNegativeInt(input.payload.extraUsers);
-  const { code: referralCode, message: referralValidationMessage } = validateReferralCode(
-    input.payload.referralCode
-  );
+  const resolved = input.resolvedReferral;
+  const { code: referralCode, message: referralValidationMessage } = resolved
+    ? { code: resolved.code, message: resolved.message }
+    : validateReferralCode(input.payload.referralCode);
   if (![1, 3, 12, 24, 36, 60].includes(termMonths)) {
     throw new Error("Unsupported term. Allowed: 1, 3, 12, 24, 36, 60 months.");
   }
@@ -317,9 +319,14 @@ export function calculateSubscriptionPricing(input: {
   const onboardingApplied = input.isFirstSubscription;
   const onboardingFee = onboardingApplied ? round2(safeNumber(cfg.addOns.onboardingFee, 0)) : 0;
 
-  const referralEligible = input.isFirstSubscription && Boolean(referralCode) && !referralValidationMessage;
+  const referralEligible =
+    input.isFirstSubscription && Boolean(referralCode) && !referralValidationMessage;
   const referralApplied = referralEligible;
-  const referralDiscount = referralApplied ? round2(safeNumber(cfg.addOns.referralDiscount, 0)) : 0;
+  const discountSource =
+    resolved && !resolved.message && resolved.discountAmount > 0
+      ? resolved.discountAmount
+      : cfg.addOns.referralDiscount;
+  const referralDiscount = referralApplied ? round2(safeNumber(discountSource, 0)) : 0;
 
   const subtotal = round2(baseAmount + extraBranchCost + extraUserCost + onboardingFee - referralDiscount);
   const taxable = Math.max(0, subtotal);
@@ -347,6 +354,7 @@ export function calculateSubscriptionPricing(input: {
     referralApplied,
     referralEligible,
     referralValidationMessage,
+    referrerOrganizationId: referralApplied ? (resolved?.referrerOrganizationId ?? null) : null,
     gstPercent,
     gstAmount,
     subTotalBeforeTax: taxable,

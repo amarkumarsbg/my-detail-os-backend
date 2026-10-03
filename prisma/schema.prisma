@@ -61,6 +61,7 @@ model Organization {
   subscriptionPayments SubscriptionPayment[]
   subscriptionBills    SubscriptionBill[]
   partnerReferral      PlatformReferralCode?
+  referralWallet       ReferralWallet?
 }
 
 model PlatformAuditLog {
@@ -94,6 +95,40 @@ model PlatformReferralCode {
   /** Set when this code is the workshop’s shareable partner code (issued after trial conversion). */
   organizationId String?       @unique
   organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+enum ReferralTransactionType {
+  REFERRER_POINTS
+  REFEREE_DISCOUNT
+}
+
+/** SaaS referrer ledger (spec: referral_wallets). */
+model ReferralWallet {
+  id             String                 @id @default(cuid())
+  organizationId String                 @unique
+  organization   Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  points         Int                    @default(0)
+  updatedAt      DateTime               @updatedAt
+  createdAt      DateTime               @default(now())
+  transactions   ReferralTransaction[]
+}
+
+/** SaaS referral ledger (spec: referral_transactions). */
+model ReferralTransaction {
+  id                   String                   @id @default(cuid())
+  walletId             String
+  wallet               ReferralWallet           @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  type                 ReferralTransactionType
+  points               Int                      @default(0)
+  amountInr            Float                    @default(0)
+  referralCode         String
+  sourceOrganizationId String?
+  paymentId            String?
+  notes                String?
+  createdAt            DateTime                 @default(now())
+
+  @@unique([paymentId, type])
+  @@index([walletId, createdAt])
 }
 
 /**
