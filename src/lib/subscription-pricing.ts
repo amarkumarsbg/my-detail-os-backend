@@ -28,6 +28,12 @@ export type SubscriptionPricingBreakdown = {
   referralEligible: boolean;
   referralValidationMessage: string | null;
   referrerOrganizationId: string | null;
+  /** Available wallet points at quote time (1 point = ₹1). */
+  walletPointsAvailable: number;
+  /** Points applied to this quote (reduces taxable before GST). */
+  walletPointsApplied: number;
+  /** INR discount from wallet points. */
+  walletPointsDiscount: number;
   gstPercent: number;
   gstAmount: number;
   subTotalBeforeTax: number;
@@ -223,6 +229,9 @@ export type SubscriptionAddOnBreakdown = {
   extraUsers: number;
   extraBranchCost: number;
   extraUserCost: number;
+  walletPointsAvailable: number;
+  walletPointsApplied: number;
+  walletPointsDiscount: number;
   gstPercent: number;
   gstAmount: number;
   subTotalBeforeTax: number;
@@ -235,6 +244,31 @@ export type SubscriptionAddOnBreakdown = {
   expiresAt: string | null;
 };
 
+/** 1 wallet point = ₹1 toward renew / upgrade / add-on taxable amount (before GST). */
+export function resolveWalletPointsRedeem(opts: {
+  availablePoints: number;
+  taxableBeforeWallet: number;
+  useWalletPoints?: boolean;
+  /** Cap applied points; ignored when useWalletPoints is false. */
+  walletPoints?: number | null;
+}): { walletPointsAvailable: number; walletPointsApplied: number; walletPointsDiscount: number } {
+  const available = Math.max(0, Math.floor(opts.availablePoints || 0));
+  const taxable = Math.max(0, round2(opts.taxableBeforeWallet));
+  if (!opts.useWalletPoints || available <= 0 || taxable <= 0) {
+    return { walletPointsAvailable: available, walletPointsApplied: 0, walletPointsDiscount: 0 };
+  }
+  const requested =
+    opts.walletPoints == null || !Number.isFinite(opts.walletPoints)
+      ? available
+      : Math.max(0, Math.floor(opts.walletPoints));
+  const applied = Math.min(available, requested, Math.floor(taxable));
+  return {
+    walletPointsAvailable: available,
+    walletPointsApplied: applied,
+    walletPointsDiscount: round2(applied),
+  };
+}
+
 export function calculateAddOnPricing(input: {
   planCode: PlanCode;
   planName: string;
@@ -244,6 +278,9 @@ export function calculateAddOnPricing(input: {
   extraUsers: number;
   expiresAt: Date | null;
   pricing?: SubscriptionPricingConfig;
+  walletPointsAvailable?: number;
+  useWalletPoints?: boolean;
+  walletPoints?: number | null;
 }): SubscriptionAddOnBreakdown {
   const cfg = input.pricing ?? getSubscriptionPricingConfigFromEnv();
   const extraBranches = clampNonNegativeInt(input.extraBranches);
@@ -260,7 +297,14 @@ export function calculateAddOnPricing(input: {
 
   const extraBranchCost = round2(extraBranches * safeNumber(cfg.addOns.extraBranchPrice, 0));
   const extraUserCost = round2(extraUsers * safeNumber(cfg.addOns.extraUserPrice, 0));
-  const taxable = round2(extraBranchCost + extraUserCost);
+  const preWallet = round2(extraBranchCost + extraUserCost);
+  const wallet = resolveWalletPointsRedeem({
+    availablePoints: input.walletPointsAvailable ?? 0,
+    taxableBeforeWallet: preWallet,
+    useWalletPoints: input.useWalletPoints,
+    walletPoints: input.walletPoints,
+  });
+  const taxable = Math.max(0, round2(preWallet - wallet.walletPointsDiscount));
   const gstPercent = safeNumber(cfg.gstPercent, 0);
   const gstAmount = round2((taxable * gstPercent) / 100);
   const finalAmount = round2(taxable + gstAmount);
@@ -273,6 +317,9 @@ export function calculateAddOnPricing(input: {
     extraUsers,
     extraBranchCost,
     extraUserCost,
+    walletPointsAvailable: wallet.walletPointsAvailable,
+    walletPointsApplied: wallet.walletPointsApplied,
+    walletPointsDiscount: wallet.walletPointsDiscount,
     gstPercent,
     gstAmount,
     subTotalBeforeTax: taxable,
@@ -294,6 +341,9 @@ export function calculateSubscriptionPricing(input: {
   payload: SubscriptionPricingInput;
   pricing?: SubscriptionPricingConfig;
   resolvedReferral?: ResolvedPlatformReferral | null;
+  walletPointsAvailable?: number;
+  useWalletPoints?: boolean;
+  walletPoints?: number | null;
 }): SubscriptionPricingBreakdown {
   const cfg = input.pricing ?? getSubscriptionPricingConfigFromEnv();
   const termMonths = input.payload.termMonths;
@@ -328,8 +378,16 @@ export function calculateSubscriptionPricing(input: {
       : cfg.addOns.referralDiscount;
   const referralDiscount = referralApplied ? round2(safeNumber(discountSource, 0)) : 0;
 
-  const subtotal = round2(baseAmount + extraBranchCost + extraUserCost + onboardingFee - referralDiscount);
-  const taxable = Math.max(0, subtotal);
+  const preWallet = round2(
+    baseAmount + extraBranchCost + extraUserCost + onboardingFee - referralDiscount
+  );
+  const wallet = resolveWalletPointsRedeem({
+    availablePoints: input.walletPointsAvailable ?? 0,
+    taxableBeforeWallet: Math.max(0, preWallet),
+    useWalletPoints: input.useWalletPoints,
+    walletPoints: input.walletPoints,
+  });
+  const taxable = Math.max(0, round2(Math.max(0, preWallet) - wallet.walletPointsDiscount));
   const gstPercent = safeNumber(cfg.gstPercent, 0);
   const gstAmount = round2((taxable * gstPercent) / 100);
   const finalAmount = round2(taxable + gstAmount);
@@ -355,6 +413,9 @@ export function calculateSubscriptionPricing(input: {
     referralEligible,
     referralValidationMessage,
     referrerOrganizationId: referralApplied ? (resolved?.referrerOrganizationId ?? null) : null,
+    walletPointsAvailable: wallet.walletPointsAvailable,
+    walletPointsApplied: wallet.walletPointsApplied,
+    walletPointsDiscount: wallet.walletPointsDiscount,
     gstPercent,
     gstAmount,
     subTotalBeforeTax: taxable,

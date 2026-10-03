@@ -86,6 +86,8 @@ export async function postStudioRenewRequest(req: Request, res: Response, next: 
         extraBranches: z.number().int().nonnegative().optional(),
         extraUsers: z.number().int().nonnegative().optional(),
         referralCode: z.string().max(32).nullable().optional(),
+        useWalletPoints: z.boolean().optional(),
+        walletPoints: z.number().int().nonnegative().nullable().optional(),
         preferOnline: z.boolean().optional(),
       })
       .parse(req.body ?? {});
@@ -205,6 +207,8 @@ export async function postStudioSubscriptionPricing(req: Request, res: Response,
         extraBranches: z.number().int().nonnegative().default(0),
         extraUsers: z.number().int().nonnegative().default(0),
         referralCode: z.string().max(32).nullable().optional(),
+        useWalletPoints: z.boolean().optional(),
+        walletPoints: z.number().int().nonnegative().nullable().optional(),
       })
       .parse(req.body ?? {});
     const quote = await getSubscriptionPricingQuote(orgId, body);
@@ -224,6 +228,8 @@ export async function postStudioAddOnPricing(req: Request, res: Response, next: 
       .object({
         extraBranches: z.number().int().nonnegative().default(0),
         extraUsers: z.number().int().nonnegative().default(0),
+        useWalletPoints: z.boolean().optional(),
+        walletPoints: z.number().int().nonnegative().nullable().optional(),
       })
       .parse(req.body ?? {});
     const quote = await getAddOnPricingQuote(orgId, body);
@@ -245,6 +251,8 @@ export async function postStudioAddOnRequest(req: Request, res: Response, next: 
         method: z.string().max(64).optional(),
         extraBranches: z.number().int().nonnegative().optional(),
         extraUsers: z.number().int().nonnegative().optional(),
+        useWalletPoints: z.boolean().optional(),
+        walletPoints: z.number().int().nonnegative().nullable().optional(),
         preferOnline: z.boolean().optional(),
       })
       .parse(req.body ?? {});

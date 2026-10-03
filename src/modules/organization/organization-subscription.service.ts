@@ -28,7 +28,11 @@ import {
   inheritedSignupReferralCode,
   resolvePlatformReferral,
 } from "../../lib/platform-referral.js";
-import { creditReferrerWalletForPaidSubscription } from "./referral-wallet.service.js";
+import {
+  creditReferrerWalletForPaidSubscription,
+  getOrgReferralWalletPoints,
+  redeemWalletPointsForPaidSubscription,
+} from "./referral-wallet.service.js";
 import {
   addMonths,
   daysUntilExpiry,
@@ -780,7 +784,11 @@ function pricingNotes(
 
 export async function getSubscriptionPricingQuote(
   organizationId: string,
-  payload: SubscriptionPricingInput & { planCode?: string }
+  payload: SubscriptionPricingInput & {
+    planCode?: string;
+    useWalletPoints?: boolean;
+    walletPoints?: number | null;
+  }
 ): Promise<StudioPricingQuote> {
   const org = await prisma.organization.findUnique({
     where: { id: organizationId },
@@ -790,7 +798,10 @@ export async function getSubscriptionPricingQuote(
     throw new AppHttpError(404, "Subscription not found", "SUBSCRIPTION_MISSING");
   }
   const isFirstSubscription = await isFirstSubscriptionForOrg(organizationId);
-  const pricing = await getResolvedSubscriptionPricing();
+  const [pricing, walletPointsAvailable] = await Promise.all([
+    getResolvedSubscriptionPricing(),
+    getOrgReferralWalletPoints(organizationId),
+  ]);
 
   let planCode = org.subscription.planCode as PlanCode;
   let planName = org.subscription.planName;
@@ -827,6 +838,9 @@ export async function getSubscriptionPricingQuote(
     isFirstSubscription,
     pricing,
     resolvedReferral: usableReferral,
+    walletPointsAvailable,
+    useWalletPoints: payload.useWalletPoints === true,
+    walletPoints: payload.walletPoints,
     payload: {
       termMonths: payload.termMonths,
       extraBranches: payload.extraBranches,
@@ -848,6 +862,8 @@ export async function requestSubscriptionRenewal(
     extraBranches?: number;
     extraUsers?: number;
     referralCode?: string | null;
+    useWalletPoints?: boolean;
+    walletPoints?: number | null;
     /** Prefer online checkout when Razorpay is configured (default true). */
     preferOnline?: boolean;
     /** Prefill for Razorpay Checkout */
@@ -874,31 +890,54 @@ export async function requestSubscriptionRenewal(
     extraBranches: Math.max(0, Math.floor(opts?.extraBranches ?? 0)),
     extraUsers: Math.max(0, Math.floor(opts?.extraUsers ?? 0)),
     referralCode: opts?.referralCode ?? null,
+    useWalletPoints: opts?.useWalletPoints === true,
+    walletPoints: opts?.walletPoints,
   });
   if (quote.breakdown.referralValidationMessage) {
     throw new AppHttpError(400, quote.breakdown.referralValidationMessage, "INVALID_REFERRAL");
   }
 
+  const coveredByWallet = quote.breakdown.finalAmount <= 0;
   const preferOnline = opts?.preferOnline !== false;
-  const useRazorpay = preferOnline && isRazorpayEnabled();
-  const method = useRazorpay ? "RAZORPAY" : opts?.method ?? "MANUAL";
+  const useRazorpay = !coveredByWallet && preferOnline && isRazorpayEnabled();
+  const method = coveredByWallet ? "WALLET" : useRazorpay ? "RAZORPAY" : opts?.method ?? "MANUAL";
 
   let payment = await prisma.subscriptionPayment.create({
     data: {
       organizationId,
       subscriptionId: org.subscription.id,
-      status: useRazorpay ? "PROCESSING" : "PENDING",
+      status: coveredByWallet ? "PROCESSING" : useRazorpay ? "PROCESSING" : "PENDING",
       amount: quote.breakdown.finalAmount,
       currency: quote.breakdown.currency,
       method,
-      gatewayProvider: useRazorpay ? "RAZORPAY" : "MANUAL",
+      gatewayProvider: coveredByWallet ? "WALLET" : useRazorpay ? "RAZORPAY" : "MANUAL",
       notes: pricingNotes(
-        useRazorpay ? "Online renewal via Razorpay" : opts?.notes ?? "Renewal requested from studio",
+        coveredByWallet
+          ? "Covered by referral wallet points"
+          : useRazorpay
+            ? "Online renewal via Razorpay"
+            : opts?.notes ?? "Renewal requested from studio",
         quote.breakdown
       ),
       recordedBy: actorLabel,
     },
   });
+
+  if (coveredByWallet) {
+    const entitlement = await verifySubscriptionPayment(
+      organizationId,
+      {
+        paymentId: payment.id,
+        outcome: "PAID",
+        txnReference: `WALLET-${payment.id.slice(0, 8)}`,
+        amount: 0,
+        notes: payment.notes,
+      },
+      actorLabel
+    );
+    const paid = await prisma.subscriptionPayment.findUniqueOrThrow({ where: { id: payment.id } });
+    return { entitlement, payment: mapPayment(paid), checkout: null };
+  }
 
   let checkout: RazorpayCheckoutPayload | null = null;
 
@@ -999,7 +1038,12 @@ export type StudioAddOnQuote = { breakdown: SubscriptionAddOnBreakdown };
  */
 export async function getAddOnPricingQuote(
   organizationId: string,
-  payload: { extraBranches?: number; extraUsers?: number }
+  payload: {
+    extraBranches?: number;
+    extraUsers?: number;
+    useWalletPoints?: boolean;
+    walletPoints?: number | null;
+  }
 ): Promise<StudioAddOnQuote> {
   const org = await prisma.organization.findUnique({
     where: { id: organizationId },
@@ -1009,10 +1053,12 @@ export async function getAddOnPricingQuote(
     throw new AppHttpError(404, "Subscription not found", "SUBSCRIPTION_MISSING");
   }
   const sub = org.subscription;
-  if (sub.status !== "ACTIVE" || sub.paymentStatus !== "PAID") {
+  // ACTIVE + unexpired term is enough. Do not require paymentStatus === PAID —
+  // a later failed/pending renew must not block mid-cycle capacity purchases.
+  if (sub.status !== "ACTIVE") {
     throw new AppHttpError(
       400,
-      "Add-ons are available only on an active paid subscription. Use Renew / Upgrade instead.",
+      "Add-ons are available only on an active subscription. Convert from trial or renew first.",
       "ADDON_NOT_ELIGIBLE"
     );
   }
@@ -1028,7 +1074,10 @@ export async function getAddOnPricingQuote(
   const limits = normalizedLimitsForSubscription(sub);
   const currentAllowedBranches = effectiveMaxBranches(limits, sub.maxBranchesOverride);
   const currentAllowedUsers = effectiveMaxUsers(limits, sub.maxUsersOverride);
-  const pricing = await getResolvedSubscriptionPricing();
+  const [pricing, walletPointsAvailable] = await Promise.all([
+    getResolvedSubscriptionPricing(),
+    getOrgReferralWalletPoints(organizationId),
+  ]);
 
   try {
     const breakdown = calculateAddOnPricing({
@@ -1040,6 +1089,9 @@ export async function getAddOnPricingQuote(
       extraUsers: payload.extraUsers ?? 0,
       expiresAt,
       pricing,
+      walletPointsAvailable,
+      useWalletPoints: payload.useWalletPoints === true,
+      walletPoints: payload.walletPoints,
     });
     return { breakdown };
   } catch (err) {
@@ -1061,6 +1113,8 @@ export async function requestSubscriptionAddOns(
   opts?: {
     extraBranches?: number;
     extraUsers?: number;
+    useWalletPoints?: boolean;
+    walletPoints?: number | null;
     preferOnline?: boolean;
     notes?: string;
     method?: string;
@@ -1084,30 +1138,51 @@ export async function requestSubscriptionAddOns(
   const quote = await getAddOnPricingQuote(organizationId, {
     extraBranches: opts?.extraBranches,
     extraUsers: opts?.extraUsers,
+    useWalletPoints: opts?.useWalletPoints === true,
+    walletPoints: opts?.walletPoints,
   });
 
+  const coveredByWallet = quote.breakdown.finalAmount <= 0;
   const preferOnline = opts?.preferOnline !== false;
-  const useRazorpay = preferOnline && isRazorpayEnabled();
-  const method = useRazorpay ? "RAZORPAY" : opts?.method ?? "MANUAL";
+  const useRazorpay = !coveredByWallet && preferOnline && isRazorpayEnabled();
+  const method = coveredByWallet ? "WALLET" : useRazorpay ? "RAZORPAY" : opts?.method ?? "MANUAL";
 
   let payment = await prisma.subscriptionPayment.create({
     data: {
       organizationId,
       subscriptionId: org.subscription.id,
-      status: useRazorpay ? "PROCESSING" : "PENDING",
+      status: coveredByWallet ? "PROCESSING" : useRazorpay ? "PROCESSING" : "PENDING",
       amount: quote.breakdown.finalAmount,
       currency: quote.breakdown.currency,
       method,
-      gatewayProvider: useRazorpay ? "RAZORPAY" : "MANUAL",
+      gatewayProvider: coveredByWallet ? "WALLET" : useRazorpay ? "RAZORPAY" : "MANUAL",
       notes: pricingNotes(
-        useRazorpay
-          ? "Online add-on via Razorpay"
-          : opts?.notes ?? "Capacity add-on requested from studio",
+        coveredByWallet
+          ? "Covered by referral wallet points"
+          : useRazorpay
+            ? "Online add-on via Razorpay"
+            : opts?.notes ?? "Capacity add-on requested from studio",
         quote.breakdown
       ),
       recordedBy: actorLabel,
     },
   });
+
+  if (coveredByWallet) {
+    const entitlement = await verifySubscriptionPayment(
+      organizationId,
+      {
+        paymentId: payment.id,
+        outcome: "PAID",
+        txnReference: `WALLET-${payment.id.slice(0, 8)}`,
+        amount: 0,
+        notes: payment.notes,
+      },
+      actorLabel
+    );
+    const paid = await prisma.subscriptionPayment.findUniqueOrThrow({ where: { id: payment.id } });
+    return { entitlement, payment: mapPayment(paid), checkout: null };
+  }
 
   let checkout: RazorpayCheckoutPayload | null = null;
 
@@ -1861,7 +1936,19 @@ async function settleAddOnPayment(
       );
     });
   }
-  return toEntitlement(updatedOrg, updated, usage.branchesUsed, usage.usersUsed);
+  const refereeWallet = await prisma.referralWallet.findUnique({
+    where: { organizationId: orgId },
+    select: { points: true },
+  });
+  return toEntitlement(
+    {
+      ...updatedOrg,
+      referralWalletPoints: refereeWallet?.points ?? 0,
+    },
+    updated,
+    usage.branchesUsed,
+    usage.usersUsed
+  );
 }
 
 /**
@@ -1930,6 +2017,23 @@ export async function verifySubscriptionPayment(
       where: { organizationId: orgId },
     });
     return toEntitlement(org, updated, usage.branchesUsed, usage.usersUsed);
+  }
+
+  // Debit wallet before marking paid so a short balance cannot settle free capacity.
+  if (payment.status !== "PAID") {
+    try {
+      await redeemWalletPointsForPaidSubscription({
+        organizationId: orgId,
+        paymentId: payment.id,
+        breakdown: pricing,
+      });
+    } catch (err) {
+      throw new AppHttpError(
+        400,
+        err instanceof Error ? err.message : "Could not redeem wallet points",
+        "WALLET_REDEEM_FAILED"
+      );
+    }
   }
 
   if (isAddOnBreakdown(pricing)) {
@@ -2228,6 +2332,8 @@ function applyAdminDiscount(
     referralEligible: disc > 0,
     referralValidationMessage: null,
     referrerOrganizationId: null,
+    walletPointsApplied: 0,
+    walletPointsDiscount: 0,
     subTotalBeforeTax: taxable,
     gstAmount,
     finalAmount: roundMoney(taxable + gstAmount),
