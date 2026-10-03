@@ -35,11 +35,26 @@ import {
 } from "../../lib/subscription-lock.js";
 import {
   createRazorpayOrder,
-  fetchCapturedRazorpayPaymentForOrder,
+  createRazorpayPaymentLink,
+  fetchRazorpayOrderPaymentOutcome,
+  fetchRazorpayPaymentLinkOutcome,
   getRazorpayKeyId,
   isRazorpayEnabled,
+  notifyRazorpayPaymentLink,
   verifyRazorpayPaymentSignature,
 } from "../../lib/razorpay.js";
+import { env } from "../../config/env.js";
+import {
+  isTwilioSmsEnabled,
+  isTwilioWhatsAppEnabled,
+  normalizePhoneToE164,
+  sendTransactionalSms,
+  sendWhatsAppMessage,
+} from "../../services/twilio-sms.service.js";
+import { isResendConfigured, sendViaResend } from "../../services/resend-send.js";
+import { buildOwnerPaymentLinkWhatsAppMessage } from "../../lib/owner-trial-whatsapp.js";
+import { notifyOwnerPlanActivated } from "./owner-trial-notify.service.js";
+import { ensureOrgShareReferralCode } from "./org-share-referral.service.js";
 
 export const DEFAULT_ORG_ID = "org-default";
 
@@ -59,6 +74,8 @@ export type EntitlementOrganization = {
   primaryBranchName?: string | null;
   signupSource?: string | null;
   referralCode?: string | null;
+  /** Shareable partner code — issued after converting off trial. */
+  shareReferralCode?: string | null;
 };
 
 export type EntitlementPayload = {
@@ -185,7 +202,7 @@ function normalizedLimitsForSubscription(sub: OrganizationSubscription): PlanLim
 }
 
 export function toEntitlement(
-  org: { id: string; name: string; slug: string | null },
+  org: { id: string; name: string; slug: string | null; shareReferralCode?: string | null },
   sub: OrganizationSubscription,
   branchesUsed: number,
   usersUsed: number,
@@ -204,7 +221,12 @@ export function toEntitlement(
   const exportLocked = isExportLocked(expiresAt, now);
   const termMonths = normalizeTermMonths(sub.termMonths);
   return {
-    organization: { id: org.id, name: org.name, slug: org.slug },
+    organization: {
+      id: org.id,
+      name: org.name,
+      slug: org.slug,
+      shareReferralCode: org.shareReferralCode ?? null,
+    },
     subscription: {
       planCode: sub.planCode,
       planName: sub.planName,
@@ -274,11 +296,20 @@ async function usageForOrg(organizationId: string) {
 export async function getEntitlementForOrg(organizationId: string): Promise<EntitlementPayload | null> {
   const org = await prisma.organization.findUnique({
     where: { id: organizationId },
-    include: { subscription: true },
+    include: { subscription: true, partnerReferral: true },
   });
   if (!org?.subscription) return null;
+  let shareReferralCode = org.partnerReferral?.code ?? null;
+  if (org.subscription.status !== "TRIAL" && !shareReferralCode) {
+    shareReferralCode = await ensureOrgShareReferralCode(organizationId);
+  }
   const usage = await usageForOrg(organizationId);
-  return toEntitlement(org, org.subscription, usage.branchesUsed, usage.usersUsed);
+  return toEntitlement(
+    { ...org, shareReferralCode },
+    org.subscription,
+    usage.branchesUsed,
+    usage.usersUsed
+  );
 }
 
 export async function assertCanCreateBranch(organizationId: string): Promise<EntitlementPayload> {
@@ -455,7 +486,7 @@ export async function listOrganizationsForPlatform(
   opts?: ListOrganizationsForPlatformOpts
 ) {
   const orgs = await prisma.organization.findMany({
-    orderBy: { name: "asc" },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     include: { subscription: true },
     ...(opts?.subscriptionStatus
       ? {
@@ -1197,13 +1228,13 @@ export async function confirmRazorpaySubscriptionPayment(
 }
 
 /**
- * Recover a Checkout that succeeded on Razorpay but never reached confirm
- * (e.g. modal ondismiss raced after the success screen).
- * Verifies capture status via Razorpay Orders API — does not trust the client alone.
+ * Recover a Checkout / Payment Link that succeeded on Razorpay but never reached confirm
+ * (webhook missed, modal dismissed, local env without public webhook URL).
+ * Verifies capture status via Razorpay API — does not trust the client alone.
  */
 export async function syncRazorpaySubscriptionPayment(
   organizationId: string,
-  input: { paymentId: string; razorpayOrderId?: string },
+  input: { paymentId: string; razorpayOrderId?: string; abandonIfUnpaid?: boolean },
   actorLabel: string
 ): Promise<EntitlementPayload> {
   const payment = await prisma.subscriptionPayment.findFirst({
@@ -1212,32 +1243,60 @@ export async function syncRazorpaySubscriptionPayment(
   if (!payment) {
     throw new AppHttpError(404, "Payment not found", "PAYMENT_MISSING");
   }
-  if (payment.status === "PAID") {
+  if (payment.status === "PAID" || payment.status === "FAILED") {
     const entitlement = await getEntitlementForOrg(organizationId);
     if (!entitlement) throw new AppHttpError(404, "Subscription not found", "SUBSCRIPTION_MISSING");
     return entitlement;
   }
 
-  const orderId = input.razorpayOrderId?.trim() || payment.gatewayOrderId;
-  if (!orderId) {
+  const gatewayId = input.razorpayOrderId?.trim() || payment.gatewayOrderId;
+  if (!gatewayId) {
     throw new AppHttpError(400, "No Razorpay order on this payment", "ORDER_MISSING");
   }
-  if (payment.gatewayOrderId && payment.gatewayOrderId !== orderId) {
+  if (payment.gatewayOrderId && payment.gatewayOrderId !== gatewayId) {
     throw new AppHttpError(400, "Order mismatch for this payment", "ORDER_MISMATCH");
   }
 
-  const captured = await fetchCapturedRazorpayPaymentForOrder(orderId);
-  if (!captured) {
+  const gatewayOutcome = gatewayId.startsWith("plink_")
+    ? await fetchRazorpayPaymentLinkOutcome(gatewayId)
+    : await fetchRazorpayOrderPaymentOutcome(gatewayId);
+
+  if (!gatewayOutcome || gatewayOutcome.outcome === "PENDING") {
+    if (input.abandonIfUnpaid) {
+      return verifySubscriptionPayment(
+        organizationId,
+        {
+          paymentId: payment.id,
+          outcome: "FAILED",
+          txnReference: payment.txnReference,
+          notes: "Auto-failed: Razorpay Checkout closed without a captured payment",
+        },
+        actorLabel
+      );
+    }
     throw new AppHttpError(402, "Payment not captured on Razorpay yet", "PAYMENT_NOT_CAPTURED");
+  }
+
+  if (gatewayOutcome.outcome === "FAILED") {
+    return verifySubscriptionPayment(
+      organizationId,
+      {
+        paymentId: payment.id,
+        outcome: "FAILED",
+        txnReference: gatewayOutcome.paymentId ?? payment.txnReference,
+        notes: `Razorpay ${gatewayId.startsWith("plink_") ? "payment link" : "order"} ${gatewayOutcome.status}`,
+      },
+      actorLabel
+    );
   }
 
   await prisma.subscriptionPayment.update({
     where: { id: payment.id },
     data: {
-      gatewayOrderId: orderId,
-      gatewayPaymentId: captured.paymentId,
+      gatewayOrderId: gatewayId,
+      gatewayPaymentId: gatewayOutcome.paymentId,
       gatewayProvider: "RAZORPAY",
-      method: "RAZORPAY",
+      method: gatewayId.startsWith("plink_") ? "RAZORPAY_LINK" : "RAZORPAY",
     },
   });
 
@@ -1246,21 +1305,144 @@ export async function syncRazorpaySubscriptionPayment(
     {
       paymentId: payment.id,
       outcome: "PAID",
-      txnReference: captured.paymentId,
-      notes: "Paid via Razorpay (synced after Checkout)",
+      txnReference: gatewayOutcome.paymentId,
+      notes: gatewayId.startsWith("plink_")
+        ? "Paid via Razorpay Payment Link (synced)"
+        : "Paid via Razorpay (synced after Checkout)",
     },
     actorLabel
   );
 }
 
-/** Webhook helper: mark PAID by Razorpay order id. */
-export async function settleRazorpayOrderFromWebhook(input: {
-  orderId: string;
-  paymentId: string;
-}): Promise<boolean> {
-  const payment = await prisma.subscriptionPayment.findFirst({
-    where: { gatewayOrderId: input.orderId },
+/**
+ * Best-effort: poll Razorpay for open PROCESSING/PENDING gateway payments and settle them.
+ * Used when webhooks cannot reach local/dev, and as a safety net in production.
+ */
+/** Abandoned Checkout / unpaid link older than this is auto-FAILED on reconcile. */
+const RAZORPAY_STALE_FAIL_MS = 15 * 60 * 1000;
+
+export async function reconcileOpenRazorpayPayments(opts?: {
+  limit?: number;
+}): Promise<{ settled: number; checked: number }> {
+  if (!isRazorpayEnabled()) return { settled: 0, checked: 0 };
+  const limit = Math.min(Math.max(opts?.limit ?? 30, 1), 50);
+
+  const open = await prisma.subscriptionPayment.findMany({
+    where: {
+      status: { in: ["PROCESSING", "PENDING"] },
+      gatewayOrderId: { not: null },
+      OR: [
+        { gatewayProvider: "RAZORPAY" },
+        { method: { in: ["RAZORPAY", "RAZORPAY_LINK"] } },
+      ],
+    },
+    orderBy: { createdAt: "desc" },
+    take: limit,
   });
+
+  let settled = 0;
+  const now = Date.now();
+  for (const payment of open) {
+    const gatewayId = payment.gatewayOrderId?.trim();
+    if (!gatewayId) continue;
+    try {
+      await syncRazorpaySubscriptionPayment(
+        payment.organizationId,
+        { paymentId: payment.id, razorpayOrderId: gatewayId },
+        "razorpay-reconcile"
+      );
+      const refreshed = await prisma.subscriptionPayment.findUnique({
+        where: { id: payment.id },
+        select: { status: true },
+      });
+      if (refreshed && (refreshed.status === "PAID" || refreshed.status === "FAILED")) {
+        settled += 1;
+        continue;
+      }
+
+      // Still open on gateway: expire abandoned attempts so they leave "Needs review".
+      const ageMs = now - payment.createdAt.getTime();
+      if (ageMs >= RAZORPAY_STALE_FAIL_MS) {
+        await verifySubscriptionPayment(
+          payment.organizationId,
+          {
+            paymentId: payment.id,
+            outcome: "FAILED",
+            txnReference: payment.txnReference,
+            notes: "Auto-failed: Razorpay payment not completed within 15 minutes",
+          },
+          "razorpay-reconcile"
+        );
+        settled += 1;
+      }
+    } catch {
+      /* still open on gateway, or transient API error — leave for next pass */
+      try {
+        const ageMs = now - payment.createdAt.getTime();
+        if (ageMs >= RAZORPAY_STALE_FAIL_MS) {
+          const stillOpen = await prisma.subscriptionPayment.findUnique({
+            where: { id: payment.id },
+            select: { status: true },
+          });
+          if (
+            stillOpen &&
+            (stillOpen.status === "PROCESSING" || stillOpen.status === "PENDING")
+          ) {
+            await verifySubscriptionPayment(
+              payment.organizationId,
+              {
+                paymentId: payment.id,
+                outcome: "FAILED",
+                txnReference: payment.txnReference,
+                notes: "Auto-failed: Razorpay payment not completed within 15 minutes",
+              },
+              "razorpay-reconcile"
+            );
+            settled += 1;
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  return { settled, checked: open.length };
+}
+
+async function findPaymentForRazorpayWebhook(input: {
+  orderId?: string | null;
+  paymentLinkId?: string | null;
+  notesPaymentId?: string | null;
+}) {
+  return (
+    (input.orderId
+      ? await prisma.subscriptionPayment.findFirst({
+          where: { gatewayOrderId: input.orderId },
+        })
+      : null) ??
+    (input.paymentLinkId
+      ? await prisma.subscriptionPayment.findFirst({
+          where: { gatewayOrderId: input.paymentLinkId },
+        })
+      : null) ??
+    (input.notesPaymentId
+      ? await prisma.subscriptionPayment.findUnique({
+          where: { id: input.notesPaymentId },
+        })
+      : null)
+  );
+}
+
+/** Webhook helper: mark PAID by Razorpay order id or payment-link id. */
+export async function settleRazorpayOrderFromWebhook(input: {
+  orderId?: string | null;
+  paymentId: string;
+  paymentLinkId?: string | null;
+  notesPaymentId?: string | null;
+}): Promise<boolean> {
+  const payment = await findPaymentForRazorpayWebhook(input);
+
   if (!payment) return false;
   if (payment.status === "PAID") return true;
 
@@ -1269,7 +1451,10 @@ export async function settleRazorpayOrderFromWebhook(input: {
     data: {
       gatewayPaymentId: input.paymentId,
       gatewayProvider: "RAZORPAY",
-      method: "RAZORPAY",
+      method: input.paymentLinkId || payment.gatewayOrderId?.startsWith("plink_")
+        ? "RAZORPAY_LINK"
+        : "RAZORPAY",
+      ...(input.orderId ? { gatewayOrderId: input.orderId } : {}),
     },
   });
 
@@ -1280,6 +1465,38 @@ export async function settleRazorpayOrderFromWebhook(input: {
       outcome: "PAID",
       txnReference: input.paymentId,
       notes: "Paid via Razorpay webhook",
+    },
+    "razorpay-webhook"
+  );
+  return true;
+}
+
+/** Webhook helper: mark FAILED for expired/cancelled links or failed payments. */
+export async function markRazorpayPaymentFailedFromWebhook(input: {
+  orderId?: string | null;
+  paymentId?: string | null;
+  paymentLinkId?: string | null;
+  notesPaymentId?: string | null;
+  reason?: string;
+}): Promise<boolean> {
+  const payment = await findPaymentForRazorpayWebhook(input);
+  if (!payment) return false;
+  if (payment.status === "PAID" || payment.status === "FAILED") return true;
+
+  // payment.failed on a still-open payment link should not kill the attempt
+  // (customer can retry). Only expire/cancel (or failed checkout order) settles FAILED.
+  const reason = input.reason ?? "payment.failed";
+  if (reason === "payment.failed" && payment.gatewayOrderId?.startsWith("plink_")) {
+    return false;
+  }
+
+  await verifySubscriptionPayment(
+    payment.organizationId,
+    {
+      paymentId: payment.id,
+      outcome: "FAILED",
+      txnReference: input.paymentId ?? payment.txnReference,
+      notes: `Razorpay webhook: ${reason}`,
     },
     "razorpay-webhook"
   );
@@ -1474,6 +1691,7 @@ async function settleAddOnPayment(
     amount: number | null;
     currency: string;
     txnReference: string | null;
+    status: string;
   },
   pricing: SubscriptionAddOnBreakdown,
   input: VerifyPaymentInput,
@@ -1486,6 +1704,7 @@ async function settleAddOnPayment(
   const txnRef = input.txnReference?.trim() || payment.txnReference || `ADDON-${Date.now()}`;
   const billNumber = await nextBillNumber(orgId);
   const finalAmount = pricing.finalAmount ?? input.amount ?? payment.amount ?? 0;
+  const shouldNotifyOwner = payment.status !== "PAID";
 
   const nextBranchOverride =
     pricing.finalAllowedBranches === null
@@ -1585,6 +1804,25 @@ async function settleAddOnPayment(
       where: { organizationId: orgId },
     }),
   ]);
+  if (shouldNotifyOwner) {
+    void notifyOwnerPlanActivated({
+      organizationId: orgId,
+      organizationName: org.name,
+      planName: sub.planName,
+      termLabel: "Add-on",
+      amount: finalAmount,
+      expiresAt: periodEnd,
+      kind: "addon",
+      extraBranches: pricing.extraBranches,
+      extraUsers: pricing.extraUsers,
+      billNumber,
+    }).catch((err) => {
+      console.warn(
+        "[addon-activated-notify]",
+        err instanceof Error ? err.message : err
+      );
+    });
+  }
   return toEntitlement(updatedOrg, updated, usage.branchesUsed, usage.usersUsed);
 }
 
@@ -1696,6 +1934,8 @@ export async function verifySubscriptionPayment(
       ? null
       : renewPricing?.finalAllowedUsers ?? sub.maxUsersOverride;
   const finalAmount = renewPricing?.finalAmount ?? input.amount ?? payment.amount ?? 0;
+  const shouldNotifyOwner = payment.status !== "PAID";
+  const notifyKind: "upgrade" | "renewal" = sub.status === "TRIAL" ? "upgrade" : "renewal";
 
   await prisma.$transaction(async (tx) => {
     await tx.subscriptionPayment.update({
@@ -1790,7 +2030,29 @@ export async function verifySubscriptionPayment(
       where: { organizationId: orgId },
     }),
   ]);
-  return toEntitlement(updatedOrg, updated, usage.branchesUsed, usage.usersUsed);
+  const shareReferralCode = await ensureOrgShareReferralCode(orgId);
+  if (shouldNotifyOwner) {
+    void notifyOwnerPlanActivated({
+      organizationId: orgId,
+      organizationName: org.name,
+      planName: nextPlanName,
+      termLabel,
+      amount: finalAmount,
+      expiresAt: periodEnd,
+      kind: notifyKind,
+    }).catch((err) => {
+      console.warn(
+        "[plan-activated-notify]",
+        err instanceof Error ? err.message : err
+      );
+    });
+  }
+  return toEntitlement(
+    { ...updatedOrg, shareReferralCode },
+    updated,
+    usage.branchesUsed,
+    usage.usersUsed
+  );
 }
 
 /**
@@ -1870,4 +2132,340 @@ export async function adminMarkSubscriptionPaid(
     },
     actorLabel
   );
+}
+
+function roundMoney(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function applyAdminDiscount(
+  breakdown: SubscriptionPricingBreakdown,
+  discountType: "NONE" | "FLAT" | "PERCENTAGE" | "CODE",
+  discountValue: number
+): SubscriptionPricingBreakdown {
+  if (discountType === "NONE" || discountType === "CODE") return breakdown;
+  const pre =
+    breakdown.baseAmount +
+    breakdown.extraBranchCost +
+    breakdown.extraUserCost +
+    breakdown.onboardingFee;
+  let disc = 0;
+  if (discountType === "FLAT") disc = Math.min(pre, Math.max(0, discountValue));
+  if (discountType === "PERCENTAGE") {
+    disc = Math.min(pre, (pre * Math.min(100, Math.max(0, discountValue))) / 100);
+  }
+  disc = roundMoney(disc);
+  const taxable = Math.max(0, roundMoney(pre - disc));
+  const gstAmount = roundMoney((taxable * breakdown.gstPercent) / 100);
+  return {
+    ...breakdown,
+    referralCode: null,
+    referralDiscount: disc,
+    referralApplied: disc > 0,
+    referralEligible: disc > 0,
+    referralValidationMessage: null,
+    subTotalBeforeTax: taxable,
+    gstAmount,
+    finalAmount: roundMoney(taxable + gstAmount),
+  };
+}
+
+export type AdminPaymentLinkResult = {
+  paymentId: string;
+  billId: string | null;
+  paymentLinkUrl: string;
+  amount: number;
+  currency: string;
+  expiresAt: string | null;
+  gateway: string;
+  sentVia: Array<"email" | "sms" | "whatsapp">;
+};
+
+/** Platform admin: create Razorpay Payment Link and notify owner. */
+export async function createAdminPaymentLink(
+  organizationId: string,
+  actorLabel: string,
+  input: {
+    planCode: string;
+    termMonths: 1 | 3 | 12 | 24 | 36 | 60;
+    extraBranches?: number;
+    extraUsers?: number;
+    referralCode?: string | null;
+    discountType?: "NONE" | "FLAT" | "PERCENTAGE" | "CODE";
+    discountValue?: number | null;
+    notes?: string | null;
+    sendVia?: Array<"email" | "sms" | "whatsapp">;
+    customerEmail?: string | null;
+    customerPhone?: string | null;
+  }
+): Promise<AdminPaymentLinkResult> {
+  if (!isRazorpayEnabled()) {
+    throw new AppHttpError(
+      503,
+      "Online payments are not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET on the API.",
+      "GATEWAY_DISABLED"
+    );
+  }
+
+  const org = await prisma.organization.findUnique({
+    where: { id: organizationId },
+    include: {
+      subscription: true,
+      users: {
+        where: { role: { in: ["SUPER_ADMIN", "ADMIN"] } },
+        take: 1,
+        orderBy: { id: "asc" },
+        select: { name: true, email: true, phone: true },
+      },
+    },
+  });
+  if (!org?.subscription) {
+    throw new AppHttpError(404, "Organization or subscription not found", "ORG_NOT_FOUND");
+  }
+
+  const discountType = input.discountType ?? "NONE";
+  const referralCode =
+    discountType === "CODE" ? input.referralCode?.trim() || null : null;
+
+  const quote = await getSubscriptionPricingQuote(organizationId, {
+    planCode: input.planCode,
+    termMonths: input.termMonths,
+    extraBranches: Math.max(0, Math.floor(input.extraBranches ?? 0)),
+    extraUsers: Math.max(0, Math.floor(input.extraUsers ?? 0)),
+    referralCode,
+  });
+
+  const breakdown = applyAdminDiscount(
+    quote.breakdown,
+    discountType,
+    Number(input.discountValue) || 0
+  );
+
+  if (!(breakdown.finalAmount > 0)) {
+    throw new AppHttpError(400, "Payable amount must be greater than zero", "INVALID_AMOUNT");
+  }
+
+  const owner = org.users[0];
+  const customerEmail = input.customerEmail?.trim() || owner?.email || null;
+  const customerPhone = input.customerPhone?.trim() || owner?.phone || null;
+  const customerName = owner?.name || org.name;
+
+  let payment = await prisma.subscriptionPayment.create({
+    data: {
+      organizationId,
+      subscriptionId: org.subscription.id,
+      status: "PROCESSING",
+      amount: breakdown.finalAmount,
+      currency: breakdown.currency,
+      method: "RAZORPAY_LINK",
+      gatewayProvider: "RAZORPAY",
+      notes: pricingNotes(
+        `Admin payment link${input.notes?.trim() ? ` — ${input.notes.trim()}` : ""}`,
+        breakdown
+      ),
+      recordedBy: actorLabel,
+    },
+  });
+
+  let link: Awaited<ReturnType<typeof createRazorpayPaymentLink>>;
+  try {
+    link = await createRazorpayPaymentLink({
+      amountInr: breakdown.finalAmount,
+      currency: breakdown.currency,
+      description: `${breakdown.planName} · ${breakdown.termLabel} · ${org.name}`,
+      referenceId: payment.id,
+      customer: {
+        name: customerName,
+        email: customerEmail ?? undefined,
+        contact: customerPhone ?? undefined,
+      },
+      notes: {
+        organizationId,
+        paymentId: payment.id,
+        planCode: breakdown.planCode,
+        source: "admin_payment_link",
+      },
+      notify: {
+        email: Boolean(input.sendVia?.includes("email") && customerEmail),
+        sms: Boolean(input.sendVia?.includes("sms") && customerPhone),
+      },
+      callbackUrl: `${env.FRONTEND_ORIGIN.replace(/\/$/, "")}/settings/billing`,
+    });
+  } catch (err) {
+    await prisma.subscriptionPayment.update({
+      where: { id: payment.id },
+      data: {
+        status: "FAILED",
+        notes: `${payment.notes ?? ""}\nLINK_CREATE_FAILED: ${
+          err instanceof Error ? err.message : "unknown"
+        }`,
+      },
+    });
+    throw new AppHttpError(
+      502,
+      err instanceof Error ? err.message : "Failed to create Razorpay payment link",
+      "GATEWAY_ERROR"
+    );
+  }
+
+  payment = await prisma.subscriptionPayment.update({
+    where: { id: payment.id },
+    data: {
+      gatewayOrderId: link.id,
+      notes: `${payment.notes ?? ""}\nPAYMENT_LINK_URL:${link.shortUrl}`,
+    },
+  });
+
+  await prisma.organizationSubscription.update({
+    where: { organizationId },
+    data: {
+      paymentStatus: "PROCESSING",
+      planCode: breakdown.planCode,
+      planName: breakdown.planName,
+      termMonths: breakdown.termMonths,
+    },
+  });
+
+  await prisma.platformAuditLog.create({
+    data: {
+      organizationId,
+      actor: actorLabel,
+      action: "subscription.payment_link_created",
+      before: null,
+      after: {
+        paymentId: payment.id,
+        amount: breakdown.finalAmount,
+        paymentLinkId: link.id,
+        planCode: breakdown.planCode,
+        termMonths: breakdown.termMonths,
+        discountType,
+      },
+    },
+  });
+
+  const sendVia = input.sendVia ?? [];
+  const sentVia: Array<"email" | "sms" | "whatsapp"> = [];
+  const msg = `MY DETAIL OS — payment link for ${org.name}\nAmount: ₹${breakdown.finalAmount.toFixed(2)}\nPay here: ${link.shortUrl}`;
+  const waMsg = buildOwnerPaymentLinkWhatsAppMessage({
+    ownerName: customerName,
+    organizationName: org.name,
+    amount: breakdown.finalAmount,
+    paymentLinkUrl: link.shortUrl,
+  });
+
+  for (const channel of sendVia) {
+    try {
+      if (channel === "email" && customerEmail && isResendConfigured()) {
+        await sendViaResend({
+          to: [customerEmail],
+          subject: `Payment link — ${org.name} · MY DETAIL OS`,
+          html: `<p>Hi,</p><p>Please complete your MY DETAIL OS subscription payment:</p><p><strong>₹${breakdown.finalAmount.toFixed(2)}</strong></p><p><a href="${link.shortUrl}">Pay now</a></p><p>${link.shortUrl}</p>`,
+          text: msg,
+        });
+        sentVia.push("email");
+      } else if (channel === "sms" && customerPhone && isTwilioSmsEnabled()) {
+        await sendTransactionalSms(normalizePhoneToE164(customerPhone), msg);
+        sentVia.push("sms");
+      } else if (channel === "whatsapp" && customerPhone && isTwilioWhatsAppEnabled()) {
+        await sendWhatsAppMessage(customerPhone, waMsg);
+        sentVia.push("whatsapp");
+      }
+    } catch {
+      /* channel failure should not block link creation */
+    }
+  }
+
+  return {
+    paymentId: payment.id,
+    billId: null,
+    paymentLinkUrl: link.shortUrl,
+    amount: breakdown.finalAmount,
+    currency: breakdown.currency,
+    expiresAt: null,
+    gateway: "RAZORPAY",
+    sentVia,
+  };
+}
+
+export async function resendAdminPaymentLink(
+  organizationId: string,
+  paymentId: string,
+  medium: "email" | "sms" | "whatsapp",
+  actorLabel: string
+): Promise<{ ok: boolean; paymentLinkUrl: string }> {
+  const payment = await prisma.subscriptionPayment.findFirst({
+    where: { id: paymentId, organizationId },
+    include: {
+      organization: {
+        include: {
+          users: {
+            where: { role: { in: ["SUPER_ADMIN", "ADMIN"] } },
+            take: 1,
+            orderBy: { id: "asc" },
+            select: { name: true, email: true, phone: true },
+          },
+        },
+      },
+    },
+  });
+  if (!payment) {
+    throw new AppHttpError(404, "Payment not found", "PAYMENT_NOT_FOUND");
+  }
+
+  const urlMatch = payment.notes?.match(/PAYMENT_LINK_URL:(https?:\/\/\S+)/);
+  const paymentLinkUrl = urlMatch?.[1];
+  if (!paymentLinkUrl || !payment.gatewayOrderId?.startsWith("plink_")) {
+    throw new AppHttpError(400, "No payment link on this payment", "PAYMENT_LINK_MISSING");
+  }
+
+  const owner = payment.organization.users[0];
+  const msg = `MY DETAIL OS — payment link\nAmount: ₹${Number(payment.amount ?? 0).toFixed(2)}\nPay here: ${paymentLinkUrl}`;
+  const waMsg = buildOwnerPaymentLinkWhatsAppMessage({
+    ownerName: owner?.name,
+    organizationName: payment.organization.name,
+    amount: Number(payment.amount ?? 0),
+    paymentLinkUrl,
+  });
+
+  if (medium === "email") {
+    const email = owner?.email;
+    if (!email) throw new AppHttpError(400, "Owner email missing", "EMAIL_MISSING");
+    if (isResendConfigured()) {
+      await sendViaResend({
+        to: [email],
+        subject: "Payment link — MY DETAIL OS",
+        html: `<p><a href="${paymentLinkUrl}">Pay now</a></p><p>${paymentLinkUrl}</p>`,
+        text: msg,
+      });
+    } else {
+      await notifyRazorpayPaymentLink(payment.gatewayOrderId, "email");
+    }
+  } else if (medium === "sms") {
+    const phone = owner?.phone;
+    if (!phone) throw new AppHttpError(400, "Owner phone missing", "PHONE_MISSING");
+    if (isTwilioSmsEnabled()) {
+      await sendTransactionalSms(normalizePhoneToE164(phone), msg);
+    } else {
+      await notifyRazorpayPaymentLink(payment.gatewayOrderId, "sms");
+    }
+  } else {
+    const phone = owner?.phone;
+    if (!phone) throw new AppHttpError(400, "Owner phone missing", "PHONE_MISSING");
+    if (!isTwilioWhatsAppEnabled()) {
+      throw new AppHttpError(503, "WhatsApp is not configured", "WHATSAPP_NOT_CONFIGURED");
+    }
+    await sendWhatsAppMessage(phone, waMsg);
+  }
+
+  await prisma.platformAuditLog.create({
+    data: {
+      organizationId,
+      actor: actorLabel,
+      action: "subscription.payment_link_resent",
+      before: null,
+      after: { paymentId, medium },
+    },
+  });
+
+  return { ok: true, paymentLinkUrl };
 }

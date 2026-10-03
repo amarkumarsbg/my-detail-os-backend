@@ -16,6 +16,8 @@ import { signAuthToken } from "../auth/auth.service.js";
 import { asLimitsJson } from "./organization-subscription.service.js";
 import { addMonths } from "../../lib/subscription-lock.js";
 import { ensureNonReservedSlug } from "../../lib/reserved-slugs.js";
+import { ensureOrgShareReferralCode } from "./org-share-referral.service.js";
+import { notifyOwnerTrialStarted, type OwnerTrialNotifyResult } from "./owner-trial-notify.service.js";
 
 export type ProvisionOrganizationInput = {
   businessName: string;
@@ -58,6 +60,7 @@ export type ProvisionOrganizationResult = {
     termMonths: number;
   };
   accessToken: string;
+  notified: OwnerTrialNotifyResult;
 };
 
 function shortId(): string {
@@ -218,6 +221,14 @@ export async function provisionOrganization(
     return { organization, branch, user, subscription };
   });
 
+  const notified = await notifyOwnerTrialStarted({
+    ownerName,
+    email,
+    phone,
+    temporaryPassword: password,
+    trialDays,
+  });
+
   await writePlatformAuditLog({
     organizationId: orgId,
     actor: input.actor,
@@ -234,6 +245,7 @@ export async function provisionOrganization(
       branchId,
       source: input.source ?? "provision",
       referralCode: input.referralCode ?? null,
+      notified,
     },
   });
 
@@ -273,6 +285,7 @@ export async function provisionOrganization(
       termMonths: result.subscription.termMonths,
     },
     accessToken,
+    notified,
   };
 }
 
@@ -374,6 +387,8 @@ export async function convertTrialSubscription(
       notes: input.notes ?? null,
     },
   });
+
+  await ensureOrgShareReferralCode(orgId);
 
   return {
     organizationId: orgId,

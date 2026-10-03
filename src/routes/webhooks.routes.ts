@@ -30,22 +30,61 @@ webhooksRouter.post(
       const payload = JSON.parse(raw.toString("utf8")) as {
         event?: string;
         payload?: {
-          payment?: { entity?: { id?: string; order_id?: string; status?: string } };
+          payment?: {
+            entity?: {
+              id?: string;
+              order_id?: string;
+              status?: string;
+              notes?: Record<string, string>;
+            };
+          };
           order?: { entity?: { id?: string; status?: string } };
+          payment_link?: {
+            entity?: {
+              id?: string;
+              notes?: Record<string, string>;
+            };
+          };
         };
       };
 
       const event = payload.event ?? "";
       const paymentEntity = payload.payload?.payment?.entity;
+      const linkEntity = payload.payload?.payment_link?.entity;
       const orderId = paymentEntity?.order_id ?? payload.payload?.order?.entity?.id;
       const paymentId = paymentEntity?.id;
+      const paymentLinkId = linkEntity?.id;
+      const notesPaymentId =
+        linkEntity?.notes?.paymentId ?? paymentEntity?.notes?.paymentId ?? null;
 
       if (
-        (event === "payment.captured" || event === "order.paid") &&
-        orderId &&
+        (event === "payment.captured" ||
+          event === "order.paid" ||
+          event === "payment_link.paid") &&
         paymentId
       ) {
-        await settleRazorpayOrderFromWebhook({ orderId, paymentId });
+        await settleRazorpayOrderFromWebhook({
+          orderId,
+          paymentId,
+          paymentLinkId,
+          notesPaymentId,
+        });
+      } else if (
+        (event === "payment_link.expired" ||
+          event === "payment_link.cancelled" ||
+          event === "payment.failed") &&
+        (paymentLinkId || orderId || notesPaymentId)
+      ) {
+        const { markRazorpayPaymentFailedFromWebhook } = await import(
+          "../modules/organization/organization-subscription.service.js"
+        );
+        await markRazorpayPaymentFailedFromWebhook({
+          orderId,
+          paymentId: paymentId ?? null,
+          paymentLinkId,
+          notesPaymentId,
+          reason: event,
+        });
       }
 
       res.json({ ok: true });

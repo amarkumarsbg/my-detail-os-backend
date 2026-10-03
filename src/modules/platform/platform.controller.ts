@@ -589,6 +589,19 @@ export async function listPlatformPayments(req: Request, res: Response, next: Ne
     const since = parseDateFilter(q.since);
     const until = parseDateFilter(q.until);
 
+    // Auto-settle gateway successes/failures when reviewing open payments
+    // (covers missed webhooks / local environments without a public webhook URL).
+    if (!status || status === "PROCESSING" || status === "PENDING") {
+      try {
+        const { reconcileOpenRazorpayPayments } = await import(
+          "../organization/organization-subscription.service.js"
+        );
+        await reconcileOpenRazorpayPayments({ limit: 30 });
+      } catch {
+        /* listing must still work if Razorpay is briefly unavailable */
+      }
+    }
+
     const where: Prisma.SubscriptionPaymentWhereInput = {
       ...(orgId ? { organizationId: orgId } : {}),
       ...(status ? { status: status as never } : {}),
@@ -828,6 +841,7 @@ export async function listPlatformReferrals(req: Request, res: Response, next: N
       isActive: c.isActive,
       createdBy: c.createdBy,
       notes: c.notes,
+      organizationId: c.organizationId,
       createdAt: c.createdAt.toISOString(),
       updatedAt: c.updatedAt.toISOString(),
     }));

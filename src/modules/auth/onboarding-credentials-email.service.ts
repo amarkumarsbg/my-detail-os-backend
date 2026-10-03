@@ -27,10 +27,10 @@ export async function sendUserCredentialsEmail(params: {
 
   const result = await sendViaResend({
     to: [params.toEmail.trim()],
-    subject: "Your My Detail OS account",
+    subject: "Your MY DETAIL OS trial has started",
     html: `
       <p>Hi ${nameEsc},</p>
-      <p>Your account has been created successfully.</p>
+      <p>Your MY DETAIL OS trial has started.</p>
       <p><strong>Email:</strong> ${emailEsc}<br/>
       <strong>Temporary password:</strong> <code>${passEsc}</code></p>
       <p>This is a temporary password. Please change your password after first login.</p>

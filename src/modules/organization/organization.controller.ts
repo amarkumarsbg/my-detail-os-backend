@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import {
   adminMarkSubscriptionPaid,
+  createAdminPaymentLink,
   getAddOnPricingQuote,
   getEntitlementForOrg,
   getOrganizationForPlatform,
@@ -15,6 +16,7 @@ import {
   confirmRazorpaySubscriptionPayment,
   requestSubscriptionAddOns,
   requestSubscriptionRenewal,
+  resendAdminPaymentLink,
   syncRazorpaySubscriptionPayment,
   verifySubscriptionPayment,
 } from "./organization-subscription.service.js";
@@ -157,6 +159,7 @@ export async function postStudioSyncRazorpayPayment(
       .object({
         paymentId: z.string().min(1),
         razorpayOrderId: z.string().min(1).optional(),
+        abandonIfUnpaid: z.boolean().optional(),
       })
       .parse(req.body ?? {});
     const entitlement = await syncRazorpaySubscriptionPayment(
@@ -433,6 +436,56 @@ export async function postPlatformMarkPaid(req: Request, res: Response, next: Ne
     const body = markPaidSchema.parse(req.body ?? {});
     const entitlement = await adminMarkSubscriptionPaid(orgId, actorFromReq(req), body);
     res.json({ data: entitlement, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+const paymentLinkSchema = z.object({
+  planCode: z.string().min(1).max(64),
+  termMonths: z.union([
+    z.literal(1),
+    z.literal(3),
+    z.literal(12),
+    z.literal(24),
+    z.literal(36),
+    z.literal(60),
+  ]),
+  extraBranches: z.number().int().min(0).optional(),
+  extraUsers: z.number().int().min(0).optional(),
+  referralCode: z.string().max(32).nullable().optional(),
+  discountType: z.enum(["NONE", "FLAT", "PERCENTAGE", "CODE"]).optional(),
+  discountValue: z.number().min(0).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+  sendVia: z.array(z.enum(["email", "sms", "whatsapp"])).optional(),
+  customerEmail: z.string().email().nullable().optional(),
+  customerPhone: z.string().max(32).nullable().optional(),
+});
+
+export async function postPlatformPaymentLink(req: Request, res: Response, next: NextFunction) {
+  try {
+    const orgId = paramOrgId(req);
+    const body = paymentLinkSchema.parse(req.body ?? {});
+    const data = await createAdminPaymentLink(orgId, actorFromReq(req), body);
+    res.json({ data, error: null });
+  } catch (e) {
+    next(e);
+  }
+}
+
+const paymentLinkResendSchema = z.object({
+  medium: z.enum(["email", "sms", "whatsapp"]),
+});
+
+export async function postPlatformPaymentLinkResend(req: Request, res: Response, next: NextFunction) {
+  try {
+    const orgId = paramOrgId(req);
+    const paymentId = Array.isArray(req.params.paymentId)
+      ? req.params.paymentId[0]!
+      : req.params.paymentId!;
+    const body = paymentLinkResendSchema.parse(req.body ?? {});
+    const data = await resendAdminPaymentLink(orgId, paymentId, body.medium, actorFromReq(req));
+    res.json({ data, error: null });
   } catch (e) {
     next(e);
   }

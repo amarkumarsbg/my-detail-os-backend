@@ -5,6 +5,8 @@ import {
   listPlatformOrganizations,
   patchPlatformOrganizationSubscription,
   postPlatformMarkPaid,
+  postPlatformPaymentLink,
+  postPlatformPaymentLinkResend,
   postPlatformVerifyPayment,
 } from "../organization/organization.controller.js";
 import {
@@ -53,6 +55,11 @@ platformRouter.get("/organizations/:orgId", getPlatformOrganization);
 platformRouter.patch("/organizations/:orgId/subscription", patchPlatformOrganizationSubscription);
 platformRouter.post("/organizations/:orgId/subscription/verify-payment", postPlatformVerifyPayment);
 platformRouter.post("/organizations/:orgId/subscription/mark-paid", postPlatformMarkPaid);
+platformRouter.post("/organizations/:orgId/subscription/payment-link", postPlatformPaymentLink);
+platformRouter.post(
+  "/organizations/:orgId/subscription/payment-link/:paymentId/resend",
+  postPlatformPaymentLinkResend
+);
 platformRouter.post("/organizations/:orgId/subscription/convert-trial", postPlatformConvertTrial);
 platformRouter.post("/organizations/:orgId/branches", postPlatformOrganizationBranch);
 
