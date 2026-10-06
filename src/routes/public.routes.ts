@@ -6,6 +6,7 @@ import {
   postPublicPricingQuote,
   postPublicSignup,
 } from "../controllers/public.controller.js";
+import { getPublicInspectionDocument } from "../modules/inspections/inspections.controller.js";
 
 export const publicRouter = Router();
 
@@ -15,3 +16,4 @@ publicRouter.get("/plans", getPublicPlans);
 publicRouter.get("/referral/:code", getPublicReferral);
 publicRouter.post("/pricing/quote", postPublicPricingQuote);
 publicRouter.post("/subscription/pricing", postPublicPricingQuote);
+publicRouter.get("/inspection-documents/:versionId", getPublicInspectionDocument);

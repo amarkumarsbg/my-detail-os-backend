@@ -1,6 +1,6 @@
 import { env } from "../config/env.js";
 
-export type ResendSendResult = { ok: true } | { ok: false; detail: string };
+export type ResendSendResult = { ok: true; id?: string } | { ok: false; detail: string };
 
 /** Resend-allowed test From until your domain is verified at resend.com/domains */
 export const RESEND_TEST_FROM = "My Detail OS <onboarding@resend.dev>";
@@ -33,6 +33,8 @@ export type ResendAttachment = {
   content: string;
 };
 
+export type ResendTag = { name: string; value: string };
+
 async function sendResendOnce(
   key: string,
   from: string,
@@ -42,6 +44,7 @@ async function sendResendOnce(
     html: string;
     text?: string;
     attachments?: ResendAttachment[];
+    tags?: ResendTag[];
   }
 ): Promise<ResendSendResult> {
   try {
@@ -60,6 +63,7 @@ async function sendResendOnce(
         html: params.html,
         ...(params.text?.trim() ? { text: params.text.trim() } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
+        ...(params.tags?.length ? { tags: params.tags } : {}),
       }),
     });
     if (!res.ok) {
@@ -68,7 +72,14 @@ async function sendResendOnce(
       console.error("[resend] send error:", detail);
       return { ok: false, detail };
     }
-    return { ok: true };
+    let id: string | undefined;
+    try {
+      const payload = await res.json() as { id?: unknown };
+      if (typeof payload.id === "string") id = payload.id;
+    } catch {
+      /* Older/test responses may not include a JSON body. */
+    }
+    return { ok: true, ...(id ? { id } : {}) };
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     console.error("[resend] fetch failed:", e);
@@ -87,6 +98,7 @@ export async function sendViaResend(params: {
   html: string;
   text?: string;
   attachments?: ResendAttachment[];
+  tags?: ResendTag[];
 }): Promise<ResendSendResult> {
   const key = env.RESEND_API_KEY;
   if (!key) return { ok: false, detail: "RESEND_API_KEY is not set" };

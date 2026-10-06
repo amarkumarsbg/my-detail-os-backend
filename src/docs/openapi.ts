@@ -22,6 +22,7 @@ import {
   platformExtPaths,
 } from "./paths/messaging-platform.paths.js";
 import type { OpenApiPaths } from "./helpers.js";
+import { inspectionPaths } from "./paths/inspections.paths.js";
 
 const tags = [
   { name: "Health", description: "Liveness and service metadata" },
@@ -33,6 +34,7 @@ const tags = [
   { name: "Job Cards", description: "Job cards dedicated API + photo upload (FE primary; collections compat)" },
   { name: "Billing", description: "Invoices dedicated API + public invoice (FE primary; collections compat)" },
   { name: "Quotations", description: "Quotations dedicated API + convert-to-job (FE primary; collections compat)" },
+  { name: "Inspections", description: "Tenant-scoped vehicle inspection reports, private photos, templates, revisions, PDFs, and delivery history" },
   { name: "Appointments", description: "Appointments via collections/appointments" },
   {
     name: "Bookings",
@@ -107,6 +109,7 @@ export function buildOpenApiDocument(options?: { serverUrl?: string }) {
       jobCardUploadPaths,
       invoiceAliasPaths,
       quotationPaths,
+      inspectionPaths,
       messagingPaths,
       attendancePaths,
       attendanceAdminPaths,

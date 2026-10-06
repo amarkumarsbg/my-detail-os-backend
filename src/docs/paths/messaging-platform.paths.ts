@@ -529,6 +529,18 @@ export const jobsPaths: OpenApiPaths = {
       },
     },
   },
+  "/api/jobs/inspections/uploads/cleanup": {
+    post: {
+      tags: ["Jobs"],
+      summary: "Remove expired unlinked inspection uploads",
+      description: "Secret-only cron endpoint. Requires X-Internal-Job-Key and INTERNAL_JOB_SECRET.",
+      security: [{ InternalJobKey: [] }],
+      responses: {
+        "200": okResponse({ type: "object", properties: { removed: { type: "integer" } } }),
+        ...commonErrorResponses(),
+      },
+    },
+  },
 };
 
 const orgIdParam = { name: "orgId", in: "path", required: true, schema: { type: "string" }, description: "Organization ID." };

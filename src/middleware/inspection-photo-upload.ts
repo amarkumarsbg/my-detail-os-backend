@@ -1,6 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
 import multer from "multer";
-import { isAllowedAvatarMime } from "../lib/avatar-mimes.js";
 
 /** Vehicle inspection photos (before / after) — larger limit than profile avatars. */
 export const INSPECTION_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
@@ -9,10 +8,10 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: INSPECTION_PHOTO_MAX_BYTES },
   fileFilter: (_req, file, cb) => {
-    if (isAllowedAvatarMime(file.mimetype)) {
+    if (["image/jpeg", "image/png", "image/webp"].includes(file.mimetype.toLowerCase())) {
       cb(null, true);
     } else {
-      cb(new Error("Please upload a JPEG, PNG, WebP, or GIF image."));
+      cb(new Error("Please upload a JPEG, PNG, or WebP image."));
     }
   },
 });

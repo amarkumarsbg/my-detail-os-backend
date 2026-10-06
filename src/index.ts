@@ -18,6 +18,7 @@ import { isPasswordResetEmailConfigured } from "./modules/auth/password-reset-em
 import { messagingRouter } from "./routes/messaging.routes.js";
 import { jobCardsRouter } from "./modules/job-cards/job-cards.routes.js";
 import { invoicesRouter } from "./modules/invoices/invoices.routes.js";
+import { inspectionTemplatesRouter, inspectionsRouter } from "./modules/inspections/inspections.routes.js";
 import { publicAttendanceRouter } from "./routes/public-attendance.routes.js";
 import { attendanceRouter } from "./routes/attendance.routes.js";
 import { partyRouter } from "./modules/parties/party.routes.js";
@@ -257,6 +258,8 @@ app.get("/api/public/organizations/by-slug/:slug", async (req, res, next) => {
 app.use("/api/auth", authRouter);
 app.use("/api/job-cards", jobCardsRouter);
 app.use("/api/invoices", invoicesRouter);
+app.use("/api/inspections", inspectionsRouter);
+app.use("/api/inspection-templates", inspectionTemplatesRouter);
 app.use("/api/customers", customerRouter);
 app.use("/api/bootstrap", bootstrapRouter);
 app.use("/api/collections", collectionRouter);

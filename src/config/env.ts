@@ -34,6 +34,8 @@ const schema = z.object({
   JWT_SECRET: z.string().min(16, "JWT_SECRET must be at least 16 characters"),
   PORT: z.coerce.number().default(4000),
   FRONTEND_ORIGIN: z.string().default("http://localhost:3000"),
+  /** Public API origin used for signed, short-lived document media URLs and provider callbacks. */
+  API_PUBLIC_ORIGIN: z.string().optional(),
   /** Account SID (AC…). Required for SMS when using Twilio. */
   TWILIO_ACCOUNT_SID: z.string().optional(),
   /** Primary auth token — OR use API key SID + secret below (not both required in .env; one path is enough). */
@@ -48,6 +50,8 @@ const schema = z.object({
    * Required only for server-side WhatsApp API; SMS OTP still uses TWILIO_FROM_NUMBER.
    */
   TWILIO_WHATSAPP_FROM: z.string().optional(),
+  /** Approved Twilio Content SID with a document media header for inspection reports. */
+  TWILIO_INSPECTION_TEMPLATE_SID: z.string().optional(),
   /** Default +91; set +1 etc. if your users are not in India */
   TWILIO_TO_NUMBER_PREFIX: z.string().optional(),
   /**
@@ -55,6 +59,8 @@ const schema = z.object({
    * Omit in dev to log reset URLs in the API terminal instead (see forgot-password logs).
    */
   RESEND_API_KEY: z.string().optional(),
+  /** Svix signing secret for authenticated Resend delivery webhooks. */
+  RESEND_WEBHOOK_SECRET: z.string().optional(),
   /** From address Resend recognizes, e.g. `My Detail OS <onboarding@resend.dev>` */
   MAIL_FROM: z.string().optional(),
 
@@ -93,14 +99,17 @@ export const env = schema.parse({
   JWT_SECRET: process.env.JWT_SECRET,
   PORT: process.env.PORT,
   FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN,
+  API_PUBLIC_ORIGIN: trimOpt(process.env.API_PUBLIC_ORIGIN),
   TWILIO_ACCOUNT_SID: trimOpt(process.env.TWILIO_ACCOUNT_SID),
   TWILIO_AUTH_TOKEN: trimOpt(process.env.TWILIO_AUTH_TOKEN),
   TWILIO_API_KEY_SID: trimOpt(process.env.TWILIO_API_KEY_SID),
   TWILIO_API_KEY_SECRET: trimOpt(process.env.TWILIO_API_KEY_SECRET),
   TWILIO_FROM_NUMBER: trimOpt(process.env.TWILIO_FROM_NUMBER),
   TWILIO_WHATSAPP_FROM: trimOpt(process.env.TWILIO_WHATSAPP_FROM),
+  TWILIO_INSPECTION_TEMPLATE_SID: trimOpt(process.env.TWILIO_INSPECTION_TEMPLATE_SID),
   TWILIO_TO_NUMBER_PREFIX: trimOpt(process.env.TWILIO_TO_NUMBER_PREFIX),
   RESEND_API_KEY: trimOpt(process.env.RESEND_API_KEY),
+  RESEND_WEBHOOK_SECRET: trimOpt(process.env.RESEND_WEBHOOK_SECRET),
   MAIL_FROM: trimOpt(process.env.MAIL_FROM),
   S3_BUCKET: trimOpt(process.env.S3_BUCKET),
   S3_REGION: trimOpt(process.env.S3_REGION),

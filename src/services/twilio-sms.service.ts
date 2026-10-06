@@ -83,6 +83,49 @@ export function toTwilioWhatsAppAddress(phoneInput: string): string {
   return whatsappChannelAddress(normalizePhoneToE164(phoneInput));
 }
 
+export async function sendWhatsAppInspectionDocument(params: {
+  to: string;
+  documentUrl: string;
+  reportNumber: string;
+  customerName: string;
+  statusCallbackUrl: string;
+  contentSid?: string;
+}): Promise<TwilioWhatsAppSendResult> {
+  if (!isTwilioWhatsAppEnabled()) throw new Error("Twilio WhatsApp is not configured.");
+  const from = whatsappChannelAddress(env.TWILIO_WHATSAPP_FROM!.trim());
+  const templateContent = params.contentSid
+    ? {
+        contentSid: params.contentSid,
+        contentVariables: JSON.stringify({
+          1: params.documentUrl,
+          2: params.reportNumber,
+          3: params.customerName,
+        }),
+      }
+    : {
+        body: `Vehicle inspection report ${params.reportNumber} for ${params.customerName}`,
+        mediaUrl: [params.documentUrl],
+      };
+  const message = await getClient().messages.create({
+    from,
+    to: toTwilioWhatsAppAddress(params.to),
+    ...templateContent,
+    statusCallback: params.statusCallbackUrl,
+  });
+  return {
+    sid: message.sid,
+    status: message.status ?? "queued",
+    twilioErrorCode: typeof message.errorCode === "number" ? message.errorCode : null,
+    twilioErrorMessage: (message.errorMessage as string | null) ?? null,
+  };
+}
+
+export function verifyTwilioWebhookSignature(url: string, params: Record<string, string>, signature: string): boolean {
+  const authToken = env.TWILIO_AUTH_TOKEN?.trim();
+  if (!authToken || !signature) return false;
+  return twilio.validateRequest(authToken, signature, url, params);
+}
+
 export async function sendLoginOtpSms(
   e164To: string,
   code: string

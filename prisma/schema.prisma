@@ -62,6 +62,10 @@ model Organization {
   subscriptionBills    SubscriptionBill[]
   partnerReferral      PlatformReferralCode?
   referralWallet       ReferralWallet?
+  inspectionReports   InspectionReport[]
+  inspectionTemplates InspectionTemplate[]
+  inspectionUploads   InspectionUpload[]
+  inspectionSendLogs  InspectionSendLog[]
 }
 
 model PlatformAuditLog {
@@ -319,6 +323,8 @@ model Branch {
   organization      Organization @relation(fields: [organizationId], references: [id])
   users             User[]
   attendanceRecords Attendance[]
+  inspectionReports InspectionReport[]
+  inspectionUploads InspectionUpload[]
 
   createdByUserId   String?
   updatedByUserId   String?
@@ -654,4 +660,103 @@ model AppJsonRow {
   @@id([collection, entityId])
   @@index([organizationId, collection])
   @@index([organizationId, collection, createdAt(sort: Desc)], map: "AppJsonRow_org_col_created_idx")
+}
+
+model InspectionReport {
+  id             String                    @id @default(cuid())
+  organizationId String
+  organization   Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branchId       String
+  branch         Branch                    @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  reportNumber   String
+  revision       Int                       @default(1)
+  status         String                    @default("DRAFT")
+  data           Json
+  finalizedAt    DateTime?
+  deletedAt      DateTime?
+  createdBy      String
+  updatedBy      String
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+  versions       InspectionReportVersion[]
+  uploads        InspectionUpload[]
+  sendLogs       InspectionSendLog[]
+
+  @@unique([organizationId, reportNumber])
+  @@index([organizationId, deletedAt, updatedAt(sort: Desc)])
+  @@index([organizationId, branchId, updatedAt(sort: Desc)])
+  @@index([organizationId, status, updatedAt(sort: Desc)])
+}
+
+model InspectionReportVersion {
+  id             String           @id @default(cuid())
+  reportId       String
+  report         InspectionReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  revision       Int
+  data           Json
+  documentKey    String?
+  finalizedBy    String
+  finalizedAt    DateTime         @default(now())
+  createdAt      DateTime         @default(now())
+
+  @@unique([reportId, revision])
+  @@index([reportId, finalizedAt(sort: Desc)])
+}
+
+model InspectionTemplate {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  sections       Json
+  terms          Json
+  createdBy      String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([organizationId, name])
+  @@index([organizationId, updatedAt(sort: Desc)])
+}
+
+model InspectionUpload {
+  id             String            @id @default(cuid())
+  organizationId String
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branchId       String
+  branch         Branch            @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  reportId       String?
+  report         InspectionReport? @relation(fields: [reportId], references: [id], onDelete: SetNull)
+  objectKey      String             @unique
+  mimeType       String
+  byteSize       Int
+  expiresAt      DateTime?
+  cleaning       Boolean           @default(false)
+  createdBy      String
+  createdAt      DateTime           @default(now())
+
+  @@index([organizationId, branchId, reportId])
+  @@index([expiresAt])
+}
+
+model InspectionSendLog {
+  id               String           @id @default(cuid())
+  organizationId   String
+  organization     Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  reportId         String
+  report           InspectionReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  revision         Int
+  requestId        String
+  channel          String
+  recipient        String
+  status           String           @default("QUEUED")
+  documentKey      String
+  providerMessageId String?
+  providerError    String?
+  sentBy           String
+  sentAt           DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@unique([organizationId, requestId])
+  @@index([organizationId, sentAt(sort: Desc)])
+  @@index([reportId, revision, sentAt(sort: Desc)])
 }

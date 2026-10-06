@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { env } from "../config/env.js";
 import { avatarExtensionForMime } from "../lib/avatar-mimes.js";
 
@@ -43,6 +43,57 @@ function createS3Client(): S3Client {
         }
       : {}),
   });
+}
+
+function privateInspectionStorageConfigured(): boolean {
+  return Boolean(env.S3_BUCKET && env.S3_ACCESS_KEY_ID && env.S3_SECRET_ACCESS_KEY);
+}
+
+async function putPrivateInspectionObject(objectKey: string, buffer: Buffer, contentType: string): Promise<void> {
+  const client = createS3Client();
+  await client.send(new PutObjectCommand({
+    Bucket: env.S3_BUCKET!,
+    Key: objectKey,
+    Body: buffer,
+    ContentType: contentType,
+    CacheControl: "private, no-store",
+  }));
+}
+
+/** Private tenant-owned inspection asset. The returned key is never a public URL. */
+export async function persistPrivateInspectionAsset(opts: {
+  objectKey: string;
+  buffer: Buffer;
+  mimeType: string;
+}): Promise<void> {
+  if (privateInspectionStorageConfigured()) {
+    await putPrivateInspectionObject(opts.objectKey, opts.buffer, opts.mimeType);
+    return;
+  }
+  const diskPath = path.join(process.cwd(), "private_uploads", ...opts.objectKey.split("/"));
+  await fs.mkdir(path.dirname(diskPath), { recursive: true });
+  await fs.writeFile(diskPath, opts.buffer, { flag: "wx" });
+}
+
+export async function readPrivateInspectionAsset(objectKey: string): Promise<Buffer | null> {
+  if (privateInspectionStorageConfigured()) {
+    const result = await createS3Client().send(new GetObjectCommand({ Bucket: env.S3_BUCKET!, Key: objectKey }));
+    if (!result.Body) return null;
+    return Buffer.from(await result.Body.transformToByteArray());
+  }
+  try {
+    return await fs.readFile(path.join(process.cwd(), "private_uploads", ...objectKey.split("/")));
+  } catch {
+    return null;
+  }
+}
+
+export async function deletePrivateInspectionAsset(objectKey: string): Promise<void> {
+  if (privateInspectionStorageConfigured()) {
+    await createS3Client().send(new DeleteObjectCommand({ Bucket: env.S3_BUCKET!, Key: objectKey }));
+    return;
+  }
+  await fs.rm(path.join(process.cwd(), "private_uploads", ...objectKey.split("/")), { force: true });
 }
 
 async function putPublicObject(objectKey: string, buffer: Buffer, contentType: string): Promise<string> {
