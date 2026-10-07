@@ -15,12 +15,38 @@ const MAX_SECTIONS = 40;
 const MAX_CHECKPOINTS = 500;
 const MAX_STRING_LENGTH = 4000;
 
+export const inspectionConditionSchema = z.object({
+  overallPreDriveCondition: z.enum(["GOOD", "FAIR", "POOR"]).nullable().optional(),
+  vehicleConditions: z.array(z.object({
+    id: z.string().trim().min(1).max(120),
+    number: z.number().int().positive(),
+    type: z.enum(["SCRATCH", "DENT", "CRACK", "PAINT_CHIP", "OTHER"]),
+    x: z.number().min(0).max(100),
+    y: z.number().min(0).max(100),
+    area: z.string().trim().min(1).max(200),
+    notes: z.string().max(4000).optional(),
+  })).max(200).superRefine((pins, context) => {
+    if (new Set(pins.map((pin) => pin.id)).size !== pins.length ||
+        new Set(pins.map((pin) => pin.number)).size !== pins.length) {
+      context.addIssue({ code: "custom", message: "Vehicle condition IDs and display numbers must be unique." });
+    }
+  }).optional(),
+});
+
+export function normalizeInspectionConditions(payload: Record<string, unknown>) {
+  const condition = inspectionConditionSchema.parse(payload);
+  return {
+    overallPreDriveCondition: condition.overallPreDriveCondition ?? null,
+    vehicleConditions: condition.vehicleConditions ?? [],
+  };
+}
+
 export const inspectionDraftSchema = z.object({
   branchId: z.string().trim().min(1).max(120).optional(),
   customerId: z.string().trim().min(1).max(120),
   vehicleId: z.string().trim().min(1).max(120),
   sections: z.array(z.unknown()).max(MAX_SECTIONS),
-}).passthrough();
+}).extend(inspectionConditionSchema.shape).passthrough();
 
 export const inspectionTemplateSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -29,6 +55,7 @@ export const inspectionTemplateSchema = z.object({
 });
 
 export function validateInspectionPayload(payload: Record<string, unknown>): void {
+  inspectionConditionSchema.parse(payload);
   const serialized = JSON.stringify(payload);
   if (Buffer.byteLength(serialized, "utf8") > MAX_REPORT_BYTES) {
     throw AppError.validation("Inspection report exceeds the 1 MB limit.");
@@ -144,5 +171,5 @@ export function snapshotInspectionPayload(payload: Record<string, unknown>): Rec
     : worstRating(
     ratedSections.map((section) => String(section.computedRating))
     );
-  return { ...snapshot, sections: ratedSections, computedOverallRating };
+  return { ...snapshot, ...normalizeInspectionConditions(snapshot), sections: ratedSections, computedOverallRating };
 }

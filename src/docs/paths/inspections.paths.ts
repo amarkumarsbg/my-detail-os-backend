@@ -2,6 +2,29 @@ import { bearerSecurity, commonErrorResponses, jsonBody, okResponse, type OpenAp
 
 const idParam = { name: "id", in: "path", required: true, schema: { type: "string" } };
 const revisionBody = jsonBody({ type: "object", required: ["revision"], properties: { revision: { type: "integer", minimum: 1 } } });
+const conditionProperties = {
+  overallPreDriveCondition: { type: "string", nullable: true, enum: ["GOOD", "FAIR", "POOR"] },
+  vehicleConditions: {
+    type: "array", maxItems: 200,
+    description: "Full replacement collection; [] removes all pins. IDs and positive display numbers must be unique. Remaining pins are never renumbered.",
+    items: {
+      type: "object", required: ["id", "number", "type", "x", "y", "area"],
+      properties: {
+        id: { type: "string", minLength: 1, maxLength: 120 },
+        number: { type: "integer", minimum: 1 },
+        type: { type: "string", enum: ["SCRATCH", "DENT", "CRACK", "PAINT_CHIP", "OTHER"] },
+        x: { type: "number", minimum: 0, maximum: 100 },
+        y: { type: "number", minimum: 0, maximum: 100 },
+        area: { type: "string", minLength: 1, maxLength: 200 },
+        notes: { type: "string", maxLength: 4000 },
+      },
+    },
+  },
+};
+const finalizeBody = jsonBody({
+  type: "object", required: ["revision"],
+  properties: { revision: { type: "integer", minimum: 1 }, ...conditionProperties },
+});
 const listQuery = [
   { name: "page", in: "query", schema: { type: "integer", minimum: 1, default: 1 } },
   { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } },
@@ -21,7 +44,7 @@ export const inspectionPaths: OpenApiPaths = {
     post: {
       tags: ["Inspections"], summary: "Create an inspection draft", security: bearerSecurity,
       description: "Requires JOB_CARDS_CREATE. The server assigns ID, report number, revision, and audit fields.",
-      requestBody: jsonBody({ type: "object", required: ["customerId", "vehicleId", "sections"], additionalProperties: true }),
+      requestBody: jsonBody({ type: "object", required: ["customerId", "vehicleId", "sections"], properties: conditionProperties, additionalProperties: true }),
       responses: { "201": okResponse({ type: "object", properties: { item: { type: "object", additionalProperties: true } } }), ...commonErrorResponses() },
     },
   },
@@ -71,10 +94,10 @@ export const inspectionPaths: OpenApiPaths = {
   },
   "/api/inspections/{id}": {
     get: { tags: ["Inspections"], summary: "Read an inspection", security: bearerSecurity, description: "Requires JOB_CARDS_VIEW. The item includes revision-specific pdfUrl values for retained finalized versions.", parameters: [idParam], responses: { "200": okResponse({ type: "object", properties: { item: { type: "object", properties: { revision: { type: "integer" }, pdfUrl: { type: "string" }, finalizedRevision: { type: "integer" }, versions: { type: "array", items: { type: "object", properties: { revision: { type: "integer" }, pdfUrl: { type: "string" } }, additionalProperties: true } } }, additionalProperties: true } } }), ...commonErrorResponses() } },
-    put: { tags: ["Inspections"], summary: "Update a draft inspection", security: bearerSecurity, description: "Requires JOB_CARDS_EDIT. Body must include expected revision; stale writes return 409.", parameters: [idParam], requestBody: jsonBody({ type: "object", required: ["revision", "customerId", "vehicleId", "sections"], additionalProperties: true }), responses: { "200": okResponse({ type: "object", properties: { item: { type: "object", additionalProperties: true } } }), ...commonErrorResponses() } },
+    put: { tags: ["Inspections"], summary: "Update a draft inspection", security: bearerSecurity, description: "Requires JOB_CARDS_EDIT. Body must include expected revision; stale writes return 409.", parameters: [idParam], requestBody: jsonBody({ type: "object", required: ["revision", "customerId", "vehicleId", "sections"], properties: conditionProperties, additionalProperties: true }), responses: { "200": okResponse({ type: "object", properties: { item: { type: "object", additionalProperties: true } } }), ...commonErrorResponses() } },
     delete: { tags: ["Inspections"], summary: "Soft-delete an inspection", security: bearerSecurity, description: "Requires JOB_CARDS_DELETE and organization/branch access. Returns { deleted: true } and retains report versions and send audit history.", parameters: [idParam], responses: { "200": okResponse({ type: "object", properties: { deleted: { type: "boolean", enum: [true] } } }), ...commonErrorResponses() } },
   },
-  "/api/inspections/{id}/finalize": { post: { tags: ["Inspections"], summary: "Finalize and freeze an inspection", security: bearerSecurity, description: "Requires JOB_CARDS_EDIT. Validates completeness, stores a canonical PDF, and returns the report with status FINAL.", parameters: [idParam], requestBody: revisionBody, responses: { "200": okResponse({ type: "object", properties: { item: { type: "object", additionalProperties: true } } }), ...commonErrorResponses() } } },
+  "/api/inspections/{id}/finalize": { post: { tags: ["Inspections"], summary: "Finalize and freeze an inspection", security: bearerSecurity, description: "Requires JOB_CARDS_EDIT. Validates completeness, freezes submitted Vehicle Condition fields, stores a canonical PDF, and returns status FINAL. Omitted condition fields retain the draft values. Legacy records return null and [] for missing condition data.", parameters: [idParam], requestBody: finalizeBody, responses: { "200": okResponse({ type: "object", properties: { item: { type: "object", additionalProperties: true } } }), ...commonErrorResponses() } } },
   "/api/inspections/{id}/revisions": { post: { tags: ["Inspections"], summary: "Start a draft revision", security: bearerSecurity, description: "Requires JOB_CARDS_EDIT. Prior finalized snapshots remain immutable.", parameters: [idParam], requestBody: revisionBody, responses: { "200": okResponse({ type: "object", properties: { item: { type: "object", additionalProperties: true } } }), ...commonErrorResponses() } } },
   "/api/inspections/{id}/send": { post: { tags: ["Inspections"], summary: "Send a finalized PDF", security: bearerSecurity, description: "Requires JOB_CARDS_EDIT. Uses tenant-scoped requestId idempotency; provider delivery status is updated by authenticated webhooks.", parameters: [idParam], requestBody: jsonBody({ type: "object", required: ["channel", "recipient", "revision", "requestId"], properties: { channel: { type: "string", enum: ["WHATSAPP", "EMAIL"] }, recipient: { type: "string" }, revision: { type: "integer" }, requestId: { type: "string" } } }), responses: { "200": okResponse({ type: "object", properties: { item: { type: "object", additionalProperties: true } } }), ...commonErrorResponses() } } },
   "/api/inspections/{id}/pdf": { get: { tags: ["Inspections"], summary: "Download a finalized inspection PDF", security: bearerSecurity, description: "Requires JOB_CARDS_VIEW and an unlocked subscription export entitlement.", parameters: [idParam, { name: "revision", in: "query", required: true, schema: { type: "integer", minimum: 1 } }], responses: { "200": { description: "Canonical PDF", content: { "application/pdf": { schema: { type: "string", format: "binary" } } } }, ...commonErrorResponses() } } },

@@ -5,7 +5,7 @@ import { AppError } from "../../lib/app-error.js";
 import { readPrivateInspectionAsset } from "../../services/object-storage.service.js";
 import { normalizePhoneToE164, verifyTwilioWebhookSignature } from "../../services/twilio-sms.service.js";
 import { requireDocumentOrg } from "../collections/alias-http.js";
-import { inspectionTemplateSchema, inspectionDraftSchema } from "./inspection-validation.js";
+import { inspectionConditionSchema, inspectionTemplateSchema, inspectionDraftSchema } from "./inspection-validation.js";
 import {
   createInspection,
   createInspectionRevision,
@@ -169,8 +169,9 @@ export async function postFinalizeInspection(req: Request, res: Response, next: 
   try {
     const scope = await getScope(req, res);
     if (!scope) return;
-    const body = revisionSchema.parse(req.body);
-    const item = await finalizeInspection(scope, req.auth!.id, entityId(req), body.revision);
+    const body = revisionSchema.extend(inspectionConditionSchema.shape).parse(req.body);
+    const { revision, ...conditions } = body;
+    const item = await finalizeInspection(scope, req.auth!.id, entityId(req), revision, conditions);
     res.json({ data: { item }, error: null });
   } catch (error) {
     next(error);

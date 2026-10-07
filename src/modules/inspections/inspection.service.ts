@@ -9,7 +9,7 @@ import {
   persistPrivateInspectionAsset,
   readPrivateInspectionAsset,
 } from "../../services/object-storage.service.js";
-import { assertInspectionComplete, snapshotInspectionPayload, validateInspectionPayload } from "./inspection-validation.js";
+import { assertInspectionComplete, inspectionConditionSchema, normalizeInspectionConditions, snapshotInspectionPayload, validateInspectionPayload } from "./inspection-validation.js";
 import { renderInspectionPdf } from "./inspection-pdf.service.js";
 
 type InspectionRecord = Prisma.InspectionReportGetPayload<{ include: { versions: true } }>;
@@ -20,7 +20,7 @@ function toInspectionItem(row: InspectionRecord | (Omit<InspectionRecord, "versi
     id: version.id,
     revision: version.revision,
     pdfUrl: `/api/inspections/${encodeURIComponent(serverFields.id)}/pdf?revision=${version.revision}`,
-    data: version.data,
+    data: { ...version.data as Record<string, unknown>, ...normalizeInspectionConditions(version.data as Record<string, unknown>) },
     finalizedBy: version.finalizedBy,
     finalizedAt: version.finalizedAt,
     createdAt: version.createdAt,
@@ -34,6 +34,7 @@ function toInspectionItem(row: InspectionRecord | (Omit<InspectionRecord, "versi
     : undefined;
   return {
     ...(data && typeof data === "object" ? data as Record<string, unknown> : {}),
+    ...normalizeInspectionConditions(data as Record<string, unknown>),
     ...serverFields,
     revision: serverFields.revision,
     inspectorId: serverFields.createdBy,
@@ -209,7 +210,7 @@ function makeReportNumber(): string {
 }
 
 function sanitizeDraftPayload(payload: Record<string, unknown>): Record<string, unknown> {
-  const clean = structuredClone(payload);
+  const clean = { ...structuredClone(payload), ...normalizeInspectionConditions(payload) } as Record<string, unknown>;
   for (const field of [
     "id", "reportNumber", "revision", "status", "createdAt", "updatedAt", "createdBy",
     "updatedBy", "inspectorId", "finalizedBy", "finalizedAt", "branchId",
@@ -370,7 +371,14 @@ export async function listInspections(
   };
 }
 
-export async function finalizeInspection(scope: BranchScope, actorId: string, id: string, revision: number) {
+export async function finalizeInspection(
+  scope: BranchScope,
+  actorId: string,
+  id: string,
+  revision: number,
+  conditionInput: Record<string, unknown> = {},
+) {
+  const condition = inspectionConditionSchema.parse(conditionInput);
   let documentKey: string | undefined;
   try {
     const row = await prisma.$transaction(async (tx) => {
@@ -380,7 +388,12 @@ export async function finalizeInspection(scope: BranchScope, actorId: string, id
       if (!current) throw AppError.notFound("Inspection report not found.");
       if (current.revision !== revision) throw AppError.conflict("Inspection report revision is stale.");
       if (current.status !== "DRAFT") throw AppError.conflict("Only draft reports can be finalized.");
-      const data = current.data as Record<string, unknown>;
+      const data: Record<string, unknown> = {
+        ...current.data as Record<string, unknown>,
+        ...(condition.overallPreDriveCondition !== undefined ? { overallPreDriveCondition: condition.overallPreDriveCondition } : {}),
+        ...(condition.vehicleConditions !== undefined ? { vehicleConditions: condition.vehicleConditions } : {}),
+      };
+      validateInspectionPayload(data);
       assertInspectionComplete(data);
       await assertRelatedRecords(scope, current.branchId, data);
       const [customer, vehicle, branch, settings] = await Promise.all([
