@@ -296,6 +296,112 @@ export async function getInspection(scope: BranchScope, id: string) {
   return row ? toInspectionItem(row) : null;
 }
 
+function inspectionCustomerId(data: unknown): string {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return "";
+  const value = (data as Record<string, unknown>).customerId;
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function toCustomerInspectionItem(row: InspectionRecord | (Omit<InspectionRecord, "versions"> & { versions?: unknown[] })) {
+  const item = toInspectionItem(row) as Record<string, unknown>;
+  const id = String(item.id ?? "");
+  const rewritePdf = (url: unknown) =>
+    typeof url === "string" ? url.replace(/^\/api\/inspections\//, "/api/customer/inspections/") : url;
+  if (item.pdfUrl) item.pdfUrl = rewritePdf(item.pdfUrl);
+  if (Array.isArray(item.versions)) {
+    item.versions = item.versions.map((version) => {
+      if (!version || typeof version !== "object") return version;
+      const next = { ...(version as Record<string, unknown>) };
+      if (next.pdfUrl) next.pdfUrl = rewritePdf(next.pdfUrl);
+      return next;
+    });
+  }
+  // Keep photo asset URLs pointing at customer-auth routes.
+  if (Array.isArray(item.photos)) {
+    item.photos = item.photos.map((photo) => {
+      if (!photo || typeof photo !== "object") return photo;
+      const next = { ...(photo as Record<string, unknown>) };
+      if (typeof next.url === "string" && next.url.startsWith("/api/inspections/assets/")) {
+        next.url = next.url.replace("/api/inspections/assets/", "/api/customer/inspections/assets/");
+      }
+      return next;
+    });
+  }
+  void id;
+  return item;
+}
+
+/** FINAL inspection reports owned by the authenticated customer (portal). */
+export async function listCustomerInspections(
+  organizationId: string,
+  customerId: string,
+  opts: { page: number; limit: number } = { page: 1, limit: 50 },
+) {
+  const rows = await prisma.inspectionReport.findMany({
+    where: { organizationId, status: "FINAL", deletedAt: null },
+    include: { versions: true },
+    orderBy: { updatedAt: "desc" },
+  });
+  const owned = rows.filter((row) => inspectionCustomerId(row.data) === customerId);
+  const total = owned.length;
+  const page = Math.max(1, opts.page);
+  const limit = Math.min(100, Math.max(1, opts.limit));
+  return {
+    items: owned.slice((page - 1) * limit, page * limit).map((row) => toCustomerInspectionItem(row)),
+    total,
+    totalPages: Math.ceil(total / limit) || 0,
+  };
+}
+
+export async function getCustomerInspection(organizationId: string, customerId: string, id: string) {
+  const row = await prisma.inspectionReport.findFirst({
+    where: { id, organizationId, status: "FINAL", deletedAt: null },
+    include: { versions: true },
+  });
+  if (!row || inspectionCustomerId(row.data) !== customerId) return null;
+  return toCustomerInspectionItem(row);
+}
+
+export async function getCustomerInspectionDocument(
+  organizationId: string,
+  customerId: string,
+  id: string,
+  revision: number,
+) {
+  const version = await prisma.inspectionReportVersion.findFirst({
+    where: {
+      reportId: id,
+      revision,
+      report: { organizationId, status: "FINAL", deletedAt: null },
+    },
+    select: { documentKey: true, data: true, report: { select: { data: true } } },
+  });
+  if (!version?.documentKey) return null;
+  const ownerId = inspectionCustomerId(version.data) || inspectionCustomerId(version.report.data);
+  if (ownerId !== customerId) return null;
+  const buffer = await readPrivateInspectionAsset(version.documentKey);
+  return buffer ? { buffer, filename: `inspection-${id}-r${revision}.pdf` } : null;
+}
+
+export async function customerInspectionUploadAccess(
+  organizationId: string,
+  customerId: string,
+  assetId: string,
+) {
+  const upload = await prisma.inspectionUpload.findFirst({
+    where: {
+      id: assetId,
+      organizationId,
+      cleaning: false,
+      reportId: { not: null },
+      report: { status: "FINAL", deletedAt: null },
+    },
+    include: { report: { select: { data: true } } },
+  });
+  if (!upload?.report || inspectionCustomerId(upload.report.data) !== customerId) return null;
+  return upload;
+}
+
 export async function softDeleteInspection(scope: BranchScope, actorId: string, id: string): Promise<boolean> {
   const result = await prisma.inspectionReport.updateMany({
     where: {
